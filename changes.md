@@ -1,0 +1,1 @@
+- v0.4: Added wall collision, visible spawn carve zone, and smoother camera logic

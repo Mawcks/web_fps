@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1, viewport-fit=cover"
+  />
+  <title>Web FPS</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+<main class="container">
+  <h1>Web FPS</h1>
+  <div class="toolbar">
+    <button id="modeBtn" title="Toggle Edit/Play (P)">Enter Play</button>
+    <button id="saveBtn" title="Save layout (S)">Save</button>
+    <button id="loadBtn" title="Load layout (L)">Load</button>
+    <button id="clearBtn" title="Clear all">Clear</button>
+    <label class="inline">
+      Grid:
+      <input id="gridToggle" type="checkbox" checked />
+    </label>
+    <span id="hud" class="hud"></span>
+  </div>
+
+  <p class="instructions">
+    <b>Edit (Top-Down):</b> Click-drag on the map to draw walls. Ctrl+Z undo.
+    <b>Play:</b> Click canvas, <kbd>WASD</kbd> move, <kbd>Space</kbd> jump, <kbd>Ctrl</kbd> crouch, <kbd>P</kbd> toggle.
+  </p>
+
+  <div id="canvas-container"></div>
+</main>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

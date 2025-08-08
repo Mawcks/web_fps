@@ -1,0 +1,6 @@
+- [x] Draw rectangles in top-down view
+- [x] Toggle to FPS mode
+- [x] Reverse to solid world with carve-out
+- [x] Add wall collision
+- [ ] Save/load maps
+- [ ] Add enemy/AI/shooting
