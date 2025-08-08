@@ -9,7 +9,7 @@ const TRANSITION_MS = 1000;
 /** ====== State ====== */
 let scene, renderer, controls;
 let playMode = false;
-let activeCamera;         // current camera used for render/raycast
+let activeCamera;         // which camera renders / raycasts
 let perspCam;             // perspective (play)
 let orthoCam;             // orthographic (edit)
 
@@ -76,15 +76,15 @@ document.addEventListener('DOMContentLoaded', () => {
   perspCam = new THREE.PerspectiveCamera(75, aspect, 0.1, 2000);
   perspCam.position.set(PLAYER.pos.x, PLAYER.height, PLAYER.pos.z);
 
-  const frustumSize = 200; // world units visible vertically in edit
+  const frustumSize = 200;
   const halfW = (frustumSize * aspect) / 2;
   const halfH = frustumSize / 2;
   orthoCam = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 2000);
   orthoCam.position.set(PLAYER.pos.x, EDIT_CAM_HEIGHT, PLAYER.pos.z);
-  orthoCam.up.set(0, 0, -1);  // keep +Z down screen
+  orthoCam.up.set(0, 0, -1);
   orthoCam.lookAt(PLAYER.pos.x, 0, PLAYER.pos.z);
 
-  activeCamera = orthoCam; // start in EDIT
+  activeCamera = orthoCam; // start in edit
 
   // lights
   scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.6));
@@ -94,21 +94,18 @@ document.addEventListener('DOMContentLoaded', () => {
   dir.shadow.mapSize.set(2048, 2048);
   scene.add(dir);
 
-  // ground
+  // ground + draw plane
   const groundGeo = new THREE.PlaneGeometry(500, 500);
   const groundMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0, roughness: 1 });
   groundMesh = new THREE.Mesh(groundGeo, groundMat);
   groundMesh.rotation.x = -Math.PI / 2;
   groundMesh.receiveShadow = true;
-  groundMesh.userData.isGround = true;
   scene.add(groundMesh);
 
-  // draw plane
   const drawMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.0 });
   drawPlane = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), drawMat);
   drawPlane.rotation.x = -Math.PI / 2;
   drawPlane.position.y = 0.01;
-  drawPlane.userData.isDrawPlane = true;
   scene.add(drawPlane);
 
   // grid
@@ -117,7 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
   gridHelper.visible = true;
   scene.add(gridHelper);
 
-  // controls (for play)
+  // pointer-lock controls (for play)
   controls = new PointerLockControls(perspCam, renderer.domElement);
   controls.connect();
 
@@ -129,27 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
   gridToggle.addEventListener('change', () => (gridHelper.visible = gridToggle.checked));
 
   // keyboard
-  window.addEventListener('keydown', (e) => {
-    // prevent browser shortcuts in play (bookmark, find, etc.)
-    if (playMode && controls.isLocked) {
-      e.preventDefault();
-    }
-
-    keys.add(e.code);
-
-    if (e.code === 'KeyP') toggleMode();
-
-    // Save: only plain "S" in EDIT. Ctrl/Cmd+S saves anywhere.
-    if (e.code === 'KeyS' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      saveLayout();
-    } else if (e.code === 'KeyS' && !playMode) {
-      saveLayout();
-    }
-
-    if (e.code === 'KeyL' && !playMode) loadLayout(); // load only in edit
-    if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && !playMode) undoLast();
-  });
+  window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', (e) => keys.delete(e.code));
 
   // mouse (edit)
@@ -157,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('mousemove', onMouseMove);
   window.addEventListener('mouseup', onMouseUp);
 
-  // pointer lock try
+  // pointer lock on click in play
   const tryLock = () => {
     if (playMode && !transitioning && !controls.isLocked) controls.lock();
   };
@@ -178,7 +155,28 @@ document.addEventListener('DOMContentLoaded', () => {
   animate();
 });
 
-/** ====== Helpers ====== */
+/** ====== Events & Helpers ====== */
+function onKeyDown(e) {
+  // Block browser shortcuts while actually playing
+  if (playMode && controls.isLocked) {
+    e.preventDefault();
+  }
+  keys.add(e.code);
+
+  if (e.code === 'KeyP') toggleMode();
+
+  // Save: only plain S in edit. Ctrl/Cmd+S saves anywhere.
+  if (e.code === 'KeyS' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    saveLayout();
+  } else if (e.code === 'KeyS' && !playMode) {
+    saveLayout();
+  }
+
+  if (e.code === 'KeyL' && !playMode) loadLayout();      // avoid accidental loads in play
+  if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && !playMode) undoLast();
+}
+
 function onResize() {
   const aspect = container.clientWidth / container.clientHeight;
   // update persp
@@ -203,7 +201,6 @@ function updateHud() {
 
 function snap(v, step = 1) { return Math.round(v / step) * step; }
 
-/** Use CANVAS rect for overlay alignment */
 function worldToScreen(v) {
   const rect = renderer.domElement.getBoundingClientRect();
   const proj = v.clone().project(activeCamera);
@@ -232,7 +229,6 @@ function toggleMode() {
     transitionStart = performance.now();
     camFrom.copy(orthoCam.position);
     camTo.set(PLAYER.pos.x, PLAYER.height, PLAYER.pos.z);
-    // start play from above and zoom to player
     perspCam.position.copy(camFrom);
     perspCam.lookAt(camTo.x, camTo.y, camTo.z - 1);
     activeCamera = perspCam;
@@ -245,7 +241,6 @@ function toggleMode() {
     controls.unlock();
     modeBtn.textContent = 'Enter Play';
     gridHelper.visible = gridToggle.checked;
-    // pop back to top-down above current player x/z
     orthoCam.position.set(PLAYER.pos.x, EDIT_CAM_HEIGHT, PLAYER.pos.z);
     orthoCam.lookAt(PLAYER.pos.x, 0, PLAYER.pos.z);
     activeCamera = orthoCam;
@@ -261,6 +256,7 @@ function onMouseDown(e) {
   dragStart = new THREE.Vector3(snap(p.x, 1), 0, snap(p.z, 1));
   showDragRect(e.clientX, e.clientY, 0, 0);
 }
+
 function onMouseMove(e) {
   if (playMode || transitioning || !dragStart) return;
   const p = worldFromMouse(e);
@@ -268,6 +264,7 @@ function onMouseMove(e) {
   const end = new THREE.Vector3(snap(p.x, 1), 0, snap(p.z, 1));
   drawDragOverlay(dragStart, end);
 }
+
 function onMouseUp(e) {
   if (playMode || transitioning || !dragStart) return;
   const p = worldFromMouse(e);
@@ -322,7 +319,7 @@ function drawDragOverlay(a, b) {
   dragRectEl.style.height = `${Math.max(0, Math.max(...ys) - Math.min(...ys))}px`;
 }
 
-/** ====== Save / Load ====== */
+/** ====== Save / Load / Clear / HUD ====== */
 function saveLayout() {
   localStorage.setItem('web_fps_layout', JSON.stringify(rectangles));
   flashHud('Saved.');
@@ -402,7 +399,6 @@ function resolveCollisions(pos, half) {
     playerMin.set(pos.x - half.x, pos.y - half.y, pos.z - half.z);
     playerMax.set(pos.x + half.x, pos.y + half.y, pos.z + half.z);
   }
-
   return pos;
 }
 
@@ -413,7 +409,7 @@ function stepMovement(dt) {
   perspCam.getWorldDirection(forward);
   forward.y = 0; forward.normalize();
 
-  // RIGHT = forward x up  (fixes A/D)
+  // RIGHT = forward x up  (A/D correct)
   const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
 
   // input
@@ -423,7 +419,7 @@ function stepMovement(dt) {
       (keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0)
   );
 
-  // world-space desired direction
+  // desired dir
   const desiredDir = new THREE.Vector3();
   desiredDir.addScaledVector(right, input.x);
   desiredDir.addScaledVector(forward, -input.z);
@@ -450,7 +446,6 @@ function update(dt) {
   if (transitioning) {
     const t = Math.min(1, (performance.now() - transitionStart) / TRANSITION_MS);
     const ease = t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t;
-    // animate on perspCam
     perspCam.position.lerpVectors(camFrom, camTo, ease);
     perspCam.lookAt(camTo.x, camTo.y, camTo.z - 1);
     if (t >= 1) { transitioning = false; perspCam.position.copy(camTo); }
@@ -491,7 +486,7 @@ function update(dt) {
   if (pos.y < minY) { pos.y = minY; PLAYER.velY = 0; PLAYER.onGround = true; }
 
   perspCam.position.copy(pos);
-  PLAYER.pos.copy(pos); // keep in sync for returning to edit
+  PLAYER.pos.copy(pos);
 }
 
 function animate() {
@@ -499,76 +494,10 @@ function animate() {
   const now = performance.now();
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
+
   renderer.render(scene, activeCamera);
   update(dt);
 }
 
 /** pointer lock */
 controls.addEventListener('unlock', () => { /* noop */ });
-
-/** ====== Save / Load ====== */
-function saveLayout() {
-  localStorage.setItem('web_fps_layout', JSON.stringify(rectangles));
-  flashHud('Saved.');
-}
-function loadLayout() {
-  const raw = localStorage.getItem('web_fps_layout');
-  if (!raw) { flashHud('Nothing saved.'); return; }
-  clearLayout(true);
-  const arr = JSON.parse(raw);
-  for (const r of arr) {
-    const mesh = makeBlock(r.x + r.w / 2, r.h / 2, r.z + r.d / 2, r.w, r.h, r.d);
-    scene.add(mesh);
-    colliders.push(mesh);
-    rectangles.push(r);
-  }
-  flashHud('Loaded.');
-}
-function clearLayout(silent = false) {
-  for (const m of colliders) scene.remove(m);
-  colliders.length = 0;
-  rectangles.length = 0;
-  if (!silent) flashHud('Cleared.');
-}
-function flashHud(msg) {
-  const prev = hudEl.textContent;
-  hudEl.textContent = msg + ' ' + prev;
-  setTimeout(updateHud, 900);
-}
-
-/** ====== Drag overlay utils ====== */
-function showDragRect(x, y, w, h) {
-  dragRectEl.style.display = 'block';
-  dragRectEl.style.left = `${x}px`;
-  dragRectEl.style.top = `${y}px`;
-  dragRectEl.style.width = `${w}px`;
-  dragRectEl.style.height = `${h}px`;
-}
-function hideDragRect() { dragRectEl.style.display = 'none'; }
-
-/** ====== Blocks / Colliders ====== */
-function makeBlock(cx, cy, cz, w, h, d) {
-  const geo = new THREE.BoxGeometry(w, h, d);
-  const mat = new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.9 });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(cx, cy, cz);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.userData.aabb = new THREE.Box3().setFromObject(mesh);
-  return mesh;
-}
-
-function drawDragOverlay(a, b) {
-  const corners = [
-    new THREE.Vector3(a.x, 0, a.z),
-    new THREE.Vector3(b.x, 0, a.z),
-    new THREE.Vector3(b.x, 0, b.z),
-    new THREE.Vector3(a.x, 0, b.z),
-  ];
-  const pts = corners.map(worldToScreen);
-  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
-  dragRectEl.style.left = `${Math.min(...xs)}px`;
-  dragRectEl.style.top = `${Math.min(...ys)}px`;
-  dragRectEl.style.width = `${Math.max(0, Math.max(...xs) - Math.min(...xs))}px`;
-  dragRectEl.style.height = `${Math.max(0, Math.max(...ys) - Math.min(...ys))}px`;
-}
