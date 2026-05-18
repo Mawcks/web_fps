@@ -11,6 +11,7 @@ import { Grid } from './grid.js';
 import { buildPlayWorld, buildEditView, disposeGroup, makeTarget } from './builder.js';
 import { Editor } from './editor.js';
 import { Player } from './player.js';
+import { settings, loadSettings, pointerSpeedFor, mountSettings } from './settings.js';
 
 const EDIT_CAM_HEIGHT = 100;
 const TRANSITION_MS = 900;
@@ -19,7 +20,7 @@ const SAVE_KEY = 'web_fps_map_v1';
 
 let scene, renderer, container;
 let perspCam, orthoCam, activeCamera;
-let grid, editor, player;
+let grid, editor, player, settingsUI;
 let gridHelper, editGroup;
 let playGroup = null;
 let targetsGroup;
@@ -92,6 +93,10 @@ function init() {
   });
   editor.setEnabled(true);
 
+  loadSettings();
+  applySettings();
+  settingsUI = mountSettings({ onChange: applySettings });
+
   cacheUi();
   bindUi();
   bindInput();
@@ -111,11 +116,17 @@ function seedStarterMap() {
   grid.addOp('carve', 15, -7, 11, 14);
 }
 
+/** Push the current settings into the player (sensitivity + keybinds). */
+function applySettings() {
+  player.binds = settings.binds;
+  player.controls.pointerSpeed = pointerSpeedFor(settings.valorantSens);
+}
+
 function cacheUi() {
   for (const id of [
     'modeBtn', 'toolBtn', 'undoBtn', 'clearBtn', 'saveBtn', 'loadBtn',
     'exportBtn', 'importBtn', 'gridToggle', 'hud', 'scorePanel', 'lockOverlay',
-    'crosshair',
+    'crosshair', 'settingsBtn',
   ]) {
     ui[id] = document.getElementById(id);
   }
@@ -157,12 +168,17 @@ function bindUi() {
   ui.lockOverlay.addEventListener('click', () => {
     if (mode === 'play' && !transition) player.lock();
   });
+  ui.settingsBtn.addEventListener('click', () => {
+    if (player.isLocked) player.unlock();
+    settingsUI.open();
+  });
 }
 
 function bindInput() {
   window.addEventListener('keydown', (e) => {
+    if (e.target instanceof HTMLInputElement) return; // typing in a field, not playing
     if (mode === 'play' && player.isLocked) {
-      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].includes(e.code)) e.preventDefault();
+      if (e.code === 'Tab' || Object.values(settings.binds).includes(e.code)) e.preventDefault();
     }
     keys.add(e.code);
 

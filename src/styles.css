@@ -226,3 +226,124 @@ body.playing #crosshair {
   font-size: 0.82rem;
   color: var(--muted);
 }
+
+/* ===== Settings modal ===== */
+.modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 7, 10, 0.7);
+  padding: 1rem;
+}
+.modal.open {
+  display: flex;
+}
+
+.settings-card {
+  width: 420px;
+  max-width: 100%;
+  max-height: 86vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem 1.2rem 1.2rem;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.3rem;
+}
+.settings-head strong {
+  font-size: 1.1rem;
+}
+.settings-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.3rem;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+}
+.settings-x:hover {
+  background: var(--panel-hi);
+  color: var(--text);
+}
+
+.settings-card section {
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--border);
+}
+.settings-card h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.settings-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+  font-size: 0.92rem;
+}
+.settings-field input {
+  width: 110px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.35rem 0.5rem;
+  font-size: 0.92rem;
+}
+.settings-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.settings-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+#set-cm360 {
+  color: var(--accent-hi);
+  font-weight: 600;
+}
+
+.bind-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.bind-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.92rem;
+}
+.bind-row button {
+  min-width: 96px;
+  font-variant: small-caps;
+}
+.bind-row button.listening {
+  background: var(--accent);
+  border-color: var(--accent-hi);
+  color: #08121a;
+}
+
+.settings-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}

@@ -21,8 +21,13 @@ const SHOOT_RANGE = 80;
 export class Player {
   constructor(camera, domElement) {
     this.camera = camera;
+    this.domElement = domElement;
     this.controls = new PointerLockControls(camera, domElement); // auto-connects
 
+    this.binds = {
+      forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
+      jump: 'Space', sprint: 'ShiftLeft', crouch: 'KeyC',
+    };
     this.feet = new THREE.Vector3(0, 0, 0);
     this.vel = new THREE.Vector3(); // horizontal velocity
     this.velY = 0;
@@ -103,7 +108,24 @@ export class Player {
   }
 
   lock() {
-    this.controls.lock();
+    // unadjustedMovement = raw mouse input with no OS acceleration (Chromium).
+    const el = this.domElement;
+    let res;
+    try {
+      res = el.requestPointerLock({ unadjustedMovement: true });
+    } catch (err) {
+      res = null;
+    }
+    if (res && typeof res.catch === 'function') {
+      res.catch(() => {
+        try {
+          const fallback = el.requestPointerLock();
+          if (fallback && typeof fallback.catch === 'function') fallback.catch(() => {});
+        } catch (err) {
+          /* pointer lock unavailable */
+        }
+      });
+    }
   }
 
   unlock() {
@@ -122,8 +144,9 @@ export class Player {
     forward.normalize();
     const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
 
-    const ix = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
-    const iz = (keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0);
+    const b = this.binds;
+    const ix = (keys.has(b.right) ? 1 : 0) - (keys.has(b.left) ? 1 : 0);
+    const iz = (keys.has(b.back) ? 1 : 0) - (keys.has(b.forward) ? 1 : 0);
 
     const dir = new THREE.Vector3();
     dir.addScaledVector(right, ix);
@@ -131,8 +154,8 @@ export class Player {
     const moving = dir.lengthSq() > 0;
     if (moving) dir.normalize();
 
-    const crouching = keys.has('KeyC'); // Ctrl avoided — Ctrl+W closes the tab
-    const sprinting = (keys.has('ShiftLeft') || keys.has('ShiftRight')) && !crouching && iz < 0;
+    const crouching = keys.has(b.crouch);
+    const sprinting = keys.has(b.sprint) && !crouching && iz < 0;
     const maxSpeed = !moving
       ? 0
       : crouching
@@ -192,7 +215,7 @@ export class Player {
     this._stepMovement(dt, keys);
 
     this.velY += this.gravity * dt;
-    if (keys.has('Space') && this.onGround) {
+    if (keys.has(this.binds.jump) && this.onGround) {
       this.velY = this.jumpSpeed;
       this.onGround = false;
     }
