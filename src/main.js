@@ -1,492 +1,531 @@
+/**
+ * Web FPS — carve rooms out of solid rock from a top-down view, then drop into
+ * first person to explore and shoot.
+ *
+ * main.js wires the pieces together: the carve Grid, the top-down Editor, the
+ * FPS Player, mesh building, mode switching, targets, and save/load.
+ */
+
 import * as THREE from 'three';
-import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
+import { Grid } from './grid.js';
+import { buildPlayWorld, buildEditView, disposeGroup, makeTarget } from './builder.js';
+import { Editor } from './editor.js';
+import { Player } from './player.js';
 
-/** ====== Config ====== */
-const BLOCK_HEIGHT = 3;
-const EDIT_CAM_HEIGHT = 120;
-const TRANSITION_MS = 1000;
+const EDIT_CAM_HEIGHT = 100;
+const TRANSITION_MS = 900;
+const TARGET_COUNT = 10;
+const SAVE_KEY = 'web_fps_map_v1';
 
-/** ====== State ====== */
-let scene, renderer, controls;
-let playMode = false;
-let activeCamera;         // which camera renders / raycasts
-let perspCam;             // perspective (play)
-let orthoCam;             // orthographic (edit)
+let scene, renderer, container;
+let perspCam, orthoCam, activeCamera;
+let grid, editor, player;
+let gridHelper, editGroup;
+let playGroup = null;
+let targetsGroup;
+
+let mode = 'edit'; // 'edit' | 'play'
+let transition = null; // { start, fromPos, toPos, fromQuat, toQuat }
+let playFog; // applied only in play mode — would hide the top-down editor
+const targets = [];
+const tracers = [];
+let muzzleFlash = 0;
+let score = 0;
+let shots = 0;
+let hits = 0;
+let firing = false;
 
 const keys = new Set();
-const colliders = [];
-const rectangles = [];
-
-let gridHelper, groundMesh, drawPlane;
-let dragStart = null;
-let dragRectEl = null;
-
-let hudEl, modeBtn, gridToggle, container;
-
-const PLAYER = {
-  height: 1.8,
-  crouchHeight: 1.2,
-  radius: 0.4,
-  pos: new THREE.Vector3(0, 2, 5),
-  velY: 0,
-  onGround: false,
-
-  // movement tuning
-  walkSpeed: 4.6,
-  crouchSpeed: 3.4,
-  accel: 18.0,
-  decel: 16.0,
-  airAccel: 4.0,
-
-  jump: 5.5,
-  gravity: -14.0,
-};
-
-// horizontal velocity
-const moveVel = new THREE.Vector3();
-
+const editView = { cx: 0, cz: 0, halfW: 24, halfD: 24, zoom: 1 };
 let lastTime = performance.now();
 
-/** transition */
-let transitioning = false;
-let transitionStart = 0;
-let camFrom = new THREE.Vector3();
-let camTo = new THREE.Vector3();
+const ui = {};
 
-/** ====== Init ====== */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', init);
+
+function init() {
   container = document.getElementById('canvas-container');
-  modeBtn = document.getElementById('modeBtn');
-  hudEl = document.getElementById('hud');
-  gridToggle = document.getElementById('gridToggle');
 
-  // renderer
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(container.clientWidth, container.clientHeight);
-  renderer.shadowMap.enabled = true;
   container.appendChild(renderer.domElement);
 
-  // scene
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0c0c0c);
+  scene.background = new THREE.Color(0x0a0a0d);
+  playFog = new THREE.Fog(0x0a0a0d, 14, 46);
 
-  // cameras
   const aspect = container.clientWidth / container.clientHeight;
-  perspCam = new THREE.PerspectiveCamera(75, aspect, 0.1, 2000);
-  perspCam.position.set(PLAYER.pos.x, PLAYER.height, PLAYER.pos.z);
-
-  const frustumSize = 200;
-  const halfW = (frustumSize * aspect) / 2;
-  const halfH = frustumSize / 2;
-  orthoCam = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 2000);
-  orthoCam.position.set(PLAYER.pos.x, EDIT_CAM_HEIGHT, PLAYER.pos.z);
+  perspCam = new THREE.PerspectiveCamera(76, aspect, 0.05, 500);
+  orthoCam = new THREE.OrthographicCamera(-24, 24, 24, -24, 0.1, 1000);
   orthoCam.up.set(0, 0, -1);
-  orthoCam.lookAt(PLAYER.pos.x, 0, PLAYER.pos.z);
+  scene.add(perspCam);
+  activeCamera = orthoCam;
 
-  activeCamera = orthoCam; // start in edit
+  scene.add(new THREE.AmbientLight(0x6b7080, 0.55));
+  const hemi = new THREE.HemisphereLight(0xaab4c8, 0x2a2620, 0.5);
+  scene.add(hemi);
 
-  // lights
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.6));
-  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-  dir.position.set(10, 20, 10);
-  dir.castShadow = true;
-  dir.shadow.mapSize.set(2048, 2048);
-  scene.add(dir);
-
-  // ground + draw plane
-  const groundGeo = new THREE.PlaneGeometry(500, 500);
-  const groundMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0, roughness: 1 });
-  groundMesh = new THREE.Mesh(groundGeo, groundMat);
-  groundMesh.rotation.x = -Math.PI / 2;
-  groundMesh.receiveShadow = true;
-  scene.add(groundMesh);
-
-  const drawMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.0 });
-  drawPlane = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), drawMat);
-  drawPlane.rotation.x = -Math.PI / 2;
-  drawPlane.position.y = 0.01;
-  scene.add(drawPlane);
-
-  // grid
-  gridHelper = new THREE.GridHelper(500, 500, 0x4b4b4b, 0x2f2f2f);
-  gridHelper.position.y = 0.02;
-  gridHelper.visible = true;
+  gridHelper = new THREE.GridHelper(600, 600, 0x3a4452, 0x232a33);
+  gridHelper.position.y = 0.08;
   scene.add(gridHelper);
 
-  // pointer-lock controls (for play)
-  controls = new PointerLockControls(perspCam, renderer.domElement);
-  controls.connect();
+  grid = new Grid();
+  loadFromStorage() || seedStarterMap();
 
-  // UI
-  modeBtn.addEventListener('click', toggleMode);
-  document.getElementById('saveBtn').addEventListener('click', saveLayout);
-  document.getElementById('loadBtn').addEventListener('click', loadLayout);
-  document.getElementById('clearBtn').addEventListener('click', clearLayout);
-  gridToggle.addEventListener('change', () => (gridHelper.visible = gridToggle.checked));
+  editGroup = buildEditView(grid);
+  scene.add(editGroup);
 
-  // keyboard
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', (e) => keys.delete(e.code));
+  targetsGroup = new THREE.Group();
+  scene.add(targetsGroup);
 
-  // mouse (edit)
-  renderer.domElement.addEventListener('mousedown', onMouseDown);
-  window.addEventListener('mousemove', onMouseMove);
-  window.addEventListener('mouseup', onMouseUp);
+  player = new Player(perspCam, renderer.domElement);
+  player.gun.visible = false;
+  player.torch.visible = false;
 
-  // pointer lock on click in play
-  const tryLock = () => {
-    if (playMode && !transitioning && !controls.isLocked) controls.lock();
-  };
-  renderer.domElement.addEventListener('click', tryLock);
-  container.addEventListener('click', tryLock);
+  editor = new Editor({
+    camera: orthoCam,
+    domElement: renderer.domElement,
+    grid,
+    scene,
+    onChange: onGridChanged,
+  });
+  editor.setEnabled(true);
 
-  // resize
+  cacheUi();
+  bindUi();
+  bindInput();
   window.addEventListener('resize', onResize);
 
-  // drag overlay
-  dragRectEl = document.createElement('div');
-  dragRectEl.id = 'dragRect';
-  dragRectEl.style.display = 'none';
-  dragRectEl.style.pointerEvents = 'none';
-  container.appendChild(dragRectEl);
+  player.controls.addEventListener('unlock', onPointerUnlock);
 
-  updateHud();
+  fitEditCamera();
+  refreshHud();
   animate();
-});
+}
 
-/** ====== Events & Helpers ====== */
-function onKeyDown(e) {
-  // Block browser shortcuts while actually playing
-  if (playMode && controls.isLocked) {
-    e.preventDefault();
+/** A small two-room-and-corridor map so a first run isn't an empty void. */
+function seedStarterMap() {
+  grid.addOp('carve', -8, -6, 16, 12);
+  grid.addOp('carve', 8, -2, 7, 4);
+  grid.addOp('carve', 15, -7, 11, 14);
+}
+
+function cacheUi() {
+  for (const id of [
+    'modeBtn', 'toolBtn', 'undoBtn', 'clearBtn', 'saveBtn', 'loadBtn',
+    'exportBtn', 'importBtn', 'gridToggle', 'hud', 'scorePanel', 'lockOverlay',
+    'crosshair',
+  ]) {
+    ui[id] = document.getElementById(id);
   }
-  keys.add(e.code);
+  ui.fileInput = document.createElement('input');
+  ui.fileInput.type = 'file';
+  ui.fileInput.accept = 'application/json,.json';
+  ui.fileInput.style.display = 'none';
+  document.body.appendChild(ui.fileInput);
+}
 
-  if (e.code === 'KeyP') toggleMode();
+function bindUi() {
+  ui.modeBtn.addEventListener('click', toggleMode);
+  ui.toolBtn.addEventListener('click', toggleTool);
+  ui.undoBtn.addEventListener('click', () => {
+    if (grid.undo()) onGridChanged();
+  });
+  ui.clearBtn.addEventListener('click', () => {
+    grid.clear();
+    onGridChanged();
+    fitEditCamera();
+    flash('Cleared');
+  });
+  ui.saveBtn.addEventListener('click', saveToStorage);
+  ui.loadBtn.addEventListener('click', () => {
+    if (loadFromStorage()) {
+      onGridChanged();
+      fitEditCamera();
+      flash('Loaded');
+    } else {
+      flash('Nothing saved');
+    }
+  });
+  ui.exportBtn.addEventListener('click', exportMap);
+  ui.importBtn.addEventListener('click', () => ui.fileInput.click());
+  ui.fileInput.addEventListener('change', importMap);
+  ui.gridToggle.addEventListener('change', () => {
+    gridHelper.visible = ui.gridToggle.checked && mode === 'edit';
+  });
+  ui.lockOverlay.addEventListener('click', () => {
+    if (mode === 'play' && !transition) player.lock();
+  });
+}
 
-  // Save: only plain S in edit. Ctrl/Cmd+S saves anywhere.
-  if (e.code === 'KeyS' && (e.ctrlKey || e.metaKey)) {
+function bindInput() {
+  window.addEventListener('keydown', (e) => {
+    if (mode === 'play' && player.isLocked) {
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].includes(e.code)) e.preventDefault();
+    }
+    keys.add(e.code);
+
+    if (e.code === 'KeyP' && !transition) toggleMode();
+    if (mode === 'edit') {
+      if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (grid.undo()) onGridChanged();
+      }
+      if (e.code === 'KeyS' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        saveToStorage();
+      }
+      if (e.code === 'Digit1') setTool('carve');
+      if (e.code === 'Digit2') setTool('erase');
+    }
+  });
+  window.addEventListener('keyup', (e) => keys.delete(e.code));
+
+  renderer.domElement.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (mode === 'play' && !transition) {
+      if (player.isLocked) firing = true;
+      else player.lock();
+    }
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (e.button === 0) firing = false;
+  });
+
+  renderer.domElement.addEventListener('wheel', (e) => {
+    if (mode !== 'edit') return;
     e.preventDefault();
-    saveLayout();
-  } else if (e.code === 'KeyS' && !playMode) {
-    saveLayout();
+    editView.zoom = THREE.MathUtils.clamp(editView.zoom * (e.deltaY > 0 ? 1.12 : 0.89), 0.3, 4);
+    applyOrthoFrustum();
+  }, { passive: false });
+}
+
+/** Rebuild the editor schematic after any change to the grid. */
+function onGridChanged() {
+  scene.remove(editGroup);
+  disposeGroup(editGroup);
+  editGroup = buildEditView(grid);
+  editGroup.visible = mode === 'edit';
+  scene.add(editGroup);
+  refreshHud();
+}
+
+/** ====== Mode switching ====== */
+function toggleMode() {
+  if (transition) return;
+  if (mode === 'edit') enterPlay();
+  else enterEdit();
+}
+
+function toggleTool() {
+  setTool(editor.tool === 'carve' ? 'erase' : 'carve');
+}
+
+function setTool(tool) {
+  editor.setTool(tool);
+  ui.toolBtn.textContent = tool === 'carve' ? 'Tool: Carve' : 'Tool: Erase';
+  ui.toolBtn.classList.toggle('erase', tool === 'erase');
+}
+
+function enterPlay() {
+  if (grid.isEmpty) {
+    flash('Carve a room first');
+    return;
   }
 
-  if (e.code === 'KeyL' && !playMode) loadLayout();      // avoid accidental loads in play
-  if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && !playMode) undoLast();
+  const built = buildPlayWorld(grid);
+  if (playGroup) {
+    scene.remove(playGroup);
+    disposeGroup(playGroup);
+  }
+  playGroup = built.group;
+  scene.add(playGroup);
+  player.setColliders(built.colliders);
+
+  const spawn = grid.spawnPoint();
+  player.spawnAt(spawn.x, spawn.z, 0);
+  spawnTargets();
+
+  mode = 'play';
+  scene.fog = playFog;
+  editor.setEnabled(false);
+  editGroup.visible = false;
+  gridHelper.visible = false;
+  playGroup.visible = true;
+  targetsGroup.visible = true;
+  player.gun.visible = true;
+  player.torch.visible = true;
+  document.body.classList.add('playing');
+
+  score = 0;
+  shots = 0;
+  hits = 0;
+
+  // swoop the camera down from the top-down view into the player's eyes
+  const downQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0, 'YXZ'));
+  const fwdQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0, 'YXZ'));
+  transition = {
+    start: performance.now(),
+    fromPos: new THREE.Vector3(spawn.x, EDIT_CAM_HEIGHT, spawn.z),
+    toPos: player.camera.position.clone(),
+    fromQuat: downQuat,
+    toQuat: fwdQuat,
+  };
+  activeCamera = perspCam;
+  ui.modeBtn.textContent = 'Exit Play (P)';
+  refreshHud();
+}
+
+function enterEdit() {
+  mode = 'edit';
+  transition = null;
+  firing = false;
+  scene.fog = null;
+  player.enabled = false;
+  player.unlock();
+  player.gun.visible = false;
+  player.torch.visible = false;
+
+  if (playGroup) playGroup.visible = false;
+  targetsGroup.visible = false;
+  clearTargets();
+  editGroup.visible = true;
+  gridHelper.visible = ui.gridToggle.checked;
+  editor.setEnabled(true);
+  document.body.classList.remove('playing');
+  ui.lockOverlay.classList.remove('visible');
+
+  activeCamera = orthoCam;
+  fitEditCamera();
+  ui.modeBtn.textContent = 'Enter Play (P)';
+  refreshHud();
+}
+
+function onPointerUnlock() {
+  if (mode === 'play' && !transition) {
+    firing = false;
+    ui.lockOverlay.classList.add('visible');
+  }
+}
+
+/** ====== Targets & shooting ====== */
+function spawnTargets() {
+  clearTargets();
+  const points = grid.randomOpenPoints(TARGET_COUNT);
+  for (const p of points) {
+    const t = makeTarget();
+    placeTarget(t, p);
+    t.userData.alive = true;
+    t.userData.popT = 0;
+    targetsGroup.add(t);
+    targets.push(t);
+  }
+}
+
+function placeTarget(t, p) {
+  t.position.set(p.x, 0.9 + Math.random() * 1.6, p.z);
+  t.userData.baseY = t.position.y;
+  t.scale.setScalar(1);
+}
+
+function clearTargets() {
+  for (const t of targets) {
+    targetsGroup.remove(t);
+    t.geometry.dispose();
+  }
+  targets.length = 0;
+}
+
+function handleFiring(dt) {
+  if (!firing || !player.isLocked) return;
+  const liveTargets = targets.filter((t) => t.userData.alive);
+  const shot = player.shoot(liveTargets);
+  if (!shot) return;
+  shots++;
+  muzzleFlash = 1;
+  spawnTracer(shot.from, shot.to);
+  if (shot.target) {
+    hits++;
+    score++;
+    shot.target.userData.alive = false;
+    shot.target.userData.popT = 0.2;
+    ui.crosshair.classList.add('hit');
+    setTimeout(() => ui.crosshair.classList.remove('hit'), 110);
+  }
+  refreshHud();
+}
+
+function spawnTracer(from, to) {
+  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+  const mat = new THREE.LineBasicMaterial({ color: 0xffe49a, transparent: true, opacity: 0.95 });
+  const line = new THREE.Line(geo, mat);
+  scene.add(line);
+  tracers.push({ line, life: 0.09, max: 0.09 });
+}
+
+function updateTargets(dt) {
+  const now = performance.now() * 0.001;
+  for (const t of targets) {
+    if (t.userData.alive) {
+      t.rotation.y += t.userData.spin * dt;
+      t.rotation.x += t.userData.spin * 0.4 * dt;
+      t.position.y = t.userData.baseY + Math.sin(now * 2 + t.userData.bobPhase) * 0.12;
+    } else if (t.userData.popT > 0) {
+      t.userData.popT -= dt;
+      const f = Math.max(0, t.userData.popT / 0.2);
+      t.scale.setScalar(f * f);
+      t.rotation.y += 12 * dt;
+      if (t.userData.popT <= 0) {
+        const p = grid.randomOpenPoints(1)[0];
+        if (p) placeTarget(t, p);
+        t.userData.alive = true;
+      }
+    }
+  }
+}
+
+function updateTracers(dt) {
+  for (let i = tracers.length - 1; i >= 0; i--) {
+    const tr = tracers[i];
+    tr.life -= dt;
+    if (tr.life <= 0) {
+      scene.remove(tr.line);
+      tr.line.geometry.dispose();
+      tr.line.material.dispose();
+      tracers.splice(i, 1);
+    } else {
+      tr.line.material.opacity = (tr.life / tr.max) * 0.95;
+    }
+  }
+}
+
+/** ====== Save / load ====== */
+function saveToStorage() {
+  localStorage.setItem(SAVE_KEY, JSON.stringify(grid.toJSON()));
+  flash('Saved');
+}
+
+function loadFromStorage() {
+  const raw = localStorage.getItem(SAVE_KEY);
+  if (!raw) return false;
+  try {
+    grid.loadJSON(JSON.parse(raw));
+    return true;
+  } catch (err) {
+    console.warn('Failed to load saved map:', err);
+    return false;
+  }
+}
+
+function exportMap() {
+  const blob = new Blob([JSON.stringify(grid.toJSON(), null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'web-fps-map.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  flash('Exported');
+}
+
+function importMap(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      grid.loadJSON(JSON.parse(reader.result));
+      onGridChanged();
+      fitEditCamera();
+      flash('Imported');
+    } catch (err) {
+      flash('Bad map file');
+      console.warn(err);
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+/** ====== Camera & layout ====== */
+function fitEditCamera() {
+  const b = grid.bounds();
+  if (b) {
+    editView.cx = (b.minX + b.maxX) / 2;
+    editView.cz = (b.minZ + b.maxZ) / 2;
+    editView.halfW = (b.maxX - b.minX) / 2 + 6;
+    editView.halfD = (b.maxZ - b.minZ) / 2 + 6;
+  } else {
+    editView.cx = 0;
+    editView.cz = 0;
+    editView.halfW = 24;
+    editView.halfD = 24;
+  }
+  editView.zoom = 1;
+  orthoCam.position.set(editView.cx, EDIT_CAM_HEIGHT, editView.cz);
+  orthoCam.lookAt(editView.cx, 0, editView.cz);
+  applyOrthoFrustum();
+}
+
+function applyOrthoFrustum() {
+  const aspect = container.clientWidth / container.clientHeight;
+  let halfW = editView.halfW;
+  let halfH = editView.halfD;
+  if (halfW / aspect > halfH) halfH = halfW / aspect;
+  else halfW = halfH * aspect;
+  halfW *= editView.zoom;
+  halfH *= editView.zoom;
+  orthoCam.left = -halfW;
+  orthoCam.right = halfW;
+  orthoCam.top = halfH;
+  orthoCam.bottom = -halfH;
+  orthoCam.updateProjectionMatrix();
 }
 
 function onResize() {
   const aspect = container.clientWidth / container.clientHeight;
-  // update persp
   perspCam.aspect = aspect;
   perspCam.updateProjectionMatrix();
-  // update ortho
-  const frustumSize = 200;
-  const halfW = (frustumSize * aspect) / 2;
-  const halfH = frustumSize / 2;
-  orthoCam.left = -halfW; orthoCam.right = halfW;
-  orthoCam.top = halfH; orthoCam.bottom = -halfH;
-  orthoCam.updateProjectionMatrix();
-
+  applyOrthoFrustum();
   renderer.setSize(container.clientWidth, container.clientHeight);
 }
 
-function updateHud() {
-  hudEl.textContent = playMode
-      ? 'Mode: PLAY — WASD (accel/decel), Space jump, Ctrl crouch, P to edit'
-      : 'Mode: EDIT (Top-Down) — Click-drag to add walls. Ctrl+Z undo.';
-}
-
-function snap(v, step = 1) { return Math.round(v / step) * step; }
-
-function worldToScreen(v) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  const proj = v.clone().project(activeCamera);
-  return {
-    x: (proj.x * 0.5 + 0.5) * rect.width + rect.left,
-    y: (-proj.y * 0.5 + 0.5) * rect.height + rect.top,
-  };
-}
-
-function worldFromMouse(event) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-  const ray = new THREE.Raycaster();
-  ray.setFromCamera({ x, y }, activeCamera);
-  const hits = ray.intersectObject(drawPlane, false);
-  return hits.length ? hits[0].point.clone() : null;
-}
-
-/** ====== Mode Toggle & Transition ====== */
-function toggleMode() {
-  if (!playMode) {
-    // EDIT -> PLAY
-    playMode = true;
-    transitioning = true;
-    transitionStart = performance.now();
-    camFrom.copy(orthoCam.position);
-    camTo.set(PLAYER.pos.x, PLAYER.height, PLAYER.pos.z);
-    perspCam.position.copy(camFrom);
-    perspCam.lookAt(camTo.x, camTo.y, camTo.z - 1);
-    activeCamera = perspCam;
-    modeBtn.textContent = 'Exit Play';
-    gridHelper.visible = false;
+/** ====== HUD ====== */
+function refreshHud() {
+  if (mode === 'edit') {
+    const cells = grid.open.size;
+    ui.hud.textContent = cells
+      ? `EDIT · ${cells} cells carved · ${editor.tool} tool`
+      : 'EDIT · drag on the map to carve your first room';
+    ui.scorePanel.classList.remove('visible');
   } else {
-    // PLAY -> EDIT
-    playMode = false;
-    transitioning = false;
-    controls.unlock();
-    modeBtn.textContent = 'Enter Play';
-    gridHelper.visible = gridToggle.checked;
-    orthoCam.position.set(PLAYER.pos.x, EDIT_CAM_HEIGHT, PLAYER.pos.z);
-    orthoCam.lookAt(PLAYER.pos.x, 0, PLAYER.pos.z);
-    activeCamera = orthoCam;
+    const acc = shots ? Math.round((hits / shots) * 100) : 0;
+    ui.scorePanel.textContent = `Score ${score}   ·   Accuracy ${acc}%`;
+    ui.scorePanel.classList.add('visible');
+    ui.hud.textContent = 'PLAY · WASD move · Shift sprint · C crouch · Space jump · click to shoot';
   }
-  updateHud();
 }
 
-/** ====== Edit Mode Drawing ====== */
-function onMouseDown(e) {
-  if (playMode || transitioning) return;
-  const p = worldFromMouse(e);
-  if (!p) return;
-  dragStart = new THREE.Vector3(snap(p.x, 1), 0, snap(p.z, 1));
-  showDragRect(e.clientX, e.clientY, 0, 0);
+let flashTimer = null;
+function flash(msg) {
+  ui.hud.textContent = msg;
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(refreshHud, 1100);
 }
 
-function onMouseMove(e) {
-  if (playMode || transitioning || !dragStart) return;
-  const p = worldFromMouse(e);
-  if (!p) return;
-  const end = new THREE.Vector3(snap(p.x, 1), 0, snap(p.z, 1));
-  drawDragOverlay(dragStart, end);
-}
-
-function onMouseUp(e) {
-  if (playMode || transitioning || !dragStart) return;
-  const p = worldFromMouse(e);
-  if (!p) { hideDragRect(); dragStart = null; return; }
-  const end = new THREE.Vector3(snap(p.x, 1), 0, snap(p.z, 1));
-  addRectFromCorners(dragStart, end, BLOCK_HEIGHT);
-  dragStart = null;
-  hideDragRect();
-}
-
-function addRectFromCorners(a, b, h) {
-  const minX = Math.min(a.x, b.x);
-  const maxX = Math.max(a.x, b.x);
-  const minZ = Math.min(a.z, b.z);
-  const maxZ = Math.max(a.z, b.z);
-  const w = Math.max(1, maxX - minX);
-  const d = Math.max(1, maxZ - minZ);
-  const mesh = makeBlock(minX + w / 2, h / 2, minZ + d / 2, w, h, d);
-  scene.add(mesh);
-  colliders.push(mesh);
-  rectangles.push({ x: minX, z: minZ, w, d, h });
-}
-
-function undoLast() {
-  if (rectangles.length === 0) return;
-  rectangles.pop();
-  const mesh = colliders.pop();
-  if (mesh) scene.remove(mesh);
-}
-
-/** Drag overlay */
-function showDragRect(x, y, w, h) {
-  dragRectEl.style.display = 'block';
-  dragRectEl.style.left = `${x}px`;
-  dragRectEl.style.top = `${y}px`;
-  dragRectEl.style.width = `${w}px`;
-  dragRectEl.style.height = `${h}px`;
-}
-function hideDragRect() { dragRectEl.style.display = 'none'; }
-function drawDragOverlay(a, b) {
-  const corners = [
-    new THREE.Vector3(a.x, 0, a.z),
-    new THREE.Vector3(b.x, 0, a.z),
-    new THREE.Vector3(b.x, 0, b.z),
-    new THREE.Vector3(a.x, 0, b.z),
-  ];
-  const pts = corners.map(worldToScreen);
-  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
-  dragRectEl.style.left = `${Math.min(...xs)}px`;
-  dragRectEl.style.top = `${Math.min(...ys)}px`;
-  dragRectEl.style.width = `${Math.max(0, Math.max(...xs) - Math.min(...xs))}px`;
-  dragRectEl.style.height = `${Math.max(0, Math.max(...ys) - Math.min(...ys))}px`;
-}
-
-/** ====== Save / Load / Clear / HUD ====== */
-function saveLayout() {
-  localStorage.setItem('web_fps_layout', JSON.stringify(rectangles));
-  flashHud('Saved.');
-}
-function loadLayout() {
-  const raw = localStorage.getItem('web_fps_layout');
-  if (!raw) { flashHud('Nothing saved.'); return; }
-  clearLayout(true);
-  const arr = JSON.parse(raw);
-  for (const r of arr) {
-    const mesh = makeBlock(r.x + r.w / 2, r.h / 2, r.z + r.d / 2, r.w, r.h, r.d);
-    scene.add(mesh);
-    colliders.push(mesh);
-    rectangles.push(r);
+/** ====== Loop ====== */
+function updateTransition() {
+  const t = Math.min(1, (performance.now() - transition.start) / TRANSITION_MS);
+  const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; // easeInOutCubic
+  perspCam.position.lerpVectors(transition.fromPos, transition.toPos, e);
+  perspCam.quaternion.slerpQuaternions(transition.fromQuat, transition.toQuat, e);
+  if (t >= 1) {
+    transition = null;
+    player.spawnAt(player.feet.x, player.feet.z, 0);
+    player.lock();
+    ui.lockOverlay.classList.toggle('visible', !player.isLocked);
   }
-  flashHud('Loaded.');
-}
-function clearLayout(silent = false) {
-  for (const m of colliders) scene.remove(m);
-  colliders.length = 0;
-  rectangles.length = 0;
-  if (!silent) flashHud('Cleared.');
-}
-function flashHud(msg) {
-  const prev = hudEl.textContent;
-  hudEl.textContent = msg + ' ' + prev;
-  setTimeout(updateHud, 900);
-}
-
-/** ====== Blocks / Colliders ====== */
-function makeBlock(cx, cy, cz, w, h, d) {
-  const geo = new THREE.BoxGeometry(w, h, d);
-  const mat = new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.9 });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(cx, cy, cz);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.userData.aabb = new THREE.Box3().setFromObject(mesh);
-  return mesh;
-}
-
-/** ====== Movement & Physics ====== */
-function getPlayerHalfExtents(crouching) {
-  const h = (crouching ? PLAYER.crouchHeight : PLAYER.height);
-  return new THREE.Vector3(PLAYER.radius, h * 0.5, PLAYER.radius);
-}
-
-function resolveCollisions(pos, half) {
-  const playerMin = new THREE.Vector3(pos.x - half.x, pos.y - half.y, pos.z - half.z);
-  const playerMax = new THREE.Vector3(pos.x + half.x, pos.y + half.y, pos.z + half.z);
-
-  if (playerMin.y < 0) pos.y += (0 - playerMin.y);
-
-  for (const m of colliders) {
-    m.userData.aabb = m.userData.aabb || new THREE.Box3();
-    m.userData.aabb.setFromObject(m);
-    const a = m.userData.aabb;
-    if (!a.intersectsBox(new THREE.Box3(playerMin, playerMax))) continue;
-
-    const overlapX1 = a.max.x - playerMin.x;
-    const overlapX2 = playerMax.x - a.min.x;
-    const resolveX = (overlapX1 < overlapX2) ? overlapX1 : -overlapX2;
-
-    const overlapY1 = a.max.y - playerMin.y;
-    const overlapY2 = playerMax.y - a.min.y;
-    const resolveY = (overlapY1 < overlapY2) ? overlapY1 : -overlapY2;
-
-    const overlapZ1 = a.max.z - playerMin.z;
-    const overlapZ2 = playerMax.z - a.min.z;
-    const resolveZ = (overlapZ1 < overlapZ2) ? overlapZ1 : -overlapZ2;
-
-    const ax = Math.abs(resolveX), ay = Math.abs(resolveY), az = Math.abs(resolveZ);
-    if (ax <= ay && ax <= az) pos.x += resolveX;
-    else if (ay <= ax && ay <= az) pos.y += resolveY;
-    else pos.z += resolveZ;
-
-    playerMin.set(pos.x - half.x, pos.y - half.y, pos.z - half.z);
-    playerMax.set(pos.x + half.x, pos.y + half.y, pos.z + half.z);
-  }
-  return pos;
-}
-
-/** Accel/decel step */
-function stepMovement(dt) {
-  // forward from camera (flattened)
-  const forward = new THREE.Vector3();
-  perspCam.getWorldDirection(forward);
-  forward.y = 0; forward.normalize();
-
-  // RIGHT = forward x up  (A/D correct)
-  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-
-  // input
-  const input = new THREE.Vector3(
-      (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0),
-      0,
-      (keys.has('KeyS') ? 1 : 0) - (keys.has('KeyW') ? 1 : 0)
-  );
-
-  // desired dir
-  const desiredDir = new THREE.Vector3();
-  desiredDir.addScaledVector(right, input.x);
-  desiredDir.addScaledVector(forward, -input.z);
-  if (desiredDir.lengthSq() > 0) desiredDir.normalize();
-
-  const crouching = keys.has('ControlLeft') || keys.has('ControlRight');
-  const maxSpeed = desiredDir.lengthSq() > 0 ? (crouching ? PLAYER.crouchSpeed : PLAYER.walkSpeed) : 0;
-
-  const targetVel = desiredDir.clone().multiplyScalar(maxSpeed);
-
-  const speedingUp = targetVel.lengthSq() > moveVel.lengthSq();
-  const accelRate = PLAYER.onGround
-      ? (speedingUp ? PLAYER.accel : PLAYER.decel)
-      : PLAYER.airAccel;
-
-  const alpha = 1 - Math.exp(-accelRate * dt);
-  moveVel.lerp(targetVel, alpha);
-
-  if (maxSpeed > 0 && moveVel.lengthSq() > maxSpeed * maxSpeed) moveVel.setLength(maxSpeed);
-}
-
-/** ====== Update & Loop ====== */
-function update(dt) {
-  if (transitioning) {
-    const t = Math.min(1, (performance.now() - transitionStart) / TRANSITION_MS);
-    const ease = t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t;
-    perspCam.position.lerpVectors(camFrom, camTo, ease);
-    perspCam.lookAt(camTo.x, camTo.y, camTo.z - 1);
-    if (t >= 1) { transitioning = false; perspCam.position.copy(camTo); }
-    return;
-  }
-
-  if (!playMode) return;
-
-  stepMovement(dt);
-
-  // gravity & jump
-  PLAYER.velY += PLAYER.gravity * dt;
-  if ((keys.has('Space') || keys.has('KeyJ')) && PLAYER.onGround) {
-    PLAYER.velY = PLAYER.jump;
-    PLAYER.onGround = false;
-  }
-
-  // candidate
-  const pos = perspCam.position.clone();
-
-  // horizontal
-  pos.x += moveVel.x * dt;
-  pos.z += moveVel.z * dt;
-  pos.copy(resolveCollisions(pos, getPlayerHalfExtents(keys.has('ControlLeft') || keys.has('ControlRight'))));
-
-  // vertical
-  pos.y += PLAYER.velY * dt;
-  const beforeY = pos.y;
-  pos.copy(resolveCollisions(pos, getPlayerHalfExtents(keys.has('ControlLeft') || keys.has('ControlRight'))));
-  if (pos.y === beforeY) {
-    if (PLAYER.velY < 0) PLAYER.onGround = true;
-    PLAYER.velY = 0;
-  } else {
-    PLAYER.onGround = false;
-  }
-
-  const minY = getPlayerHalfExtents(keys.has('ControlLeft') || keys.has('ControlRight')).y;
-  if (pos.y < minY) { pos.y = minY; PLAYER.velY = 0; PLAYER.onGround = true; }
-
-  perspCam.position.copy(pos);
-  PLAYER.pos.copy(pos);
 }
 
 function animate() {
@@ -495,9 +534,36 @@ function animate() {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
 
+  if (transition) {
+    updateTransition();
+  } else if (mode === 'play') {
+    player.enabled = player.isLocked;
+    handleFiring(dt);
+    player.update(dt, keys);
+    updateTargets(dt);
+    updateTracers(dt);
+    ui.lockOverlay.classList.toggle('visible', !player.isLocked);
+  } else {
+    player.update(dt, keys); // keeps the gun viewmodel settled
+  }
+
+  muzzleFlash = Math.max(0, muzzleFlash - dt * 9);
+  player.torch.intensity = 1.0 + muzzleFlash * 2.4;
+
   renderer.render(scene, activeCamera);
-  update(dt);
 }
 
-/** pointer lock */
-controls.addEventListener('unlock', () => { /* noop */ });
+// Dev-only inspection handle (stripped from production builds by Vite).
+if (import.meta.env.DEV) {
+  window.__wf = {
+    get mode() { return mode; },
+    get grid() { return grid; },
+    get player() { return player; },
+    get scene() { return scene; },
+    get targets() { return targets; },
+    get transition() { return transition; },
+    get renderer() { return renderer; },
+    enterPlay,
+    enterEdit,
+  };
+}

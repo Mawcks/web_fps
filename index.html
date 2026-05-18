@@ -2,36 +2,43 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1, viewport-fit=cover"
-  />
-  <title>Web FPS</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Web FPS — Carve</title>
   <link rel="stylesheet" href="/src/styles.css" />
 </head>
 <body>
-<main class="container">
-  <h1>Web FPS</h1>
+<main class="app">
+  <header>
+    <h1>Web FPS <span class="sub">carve a world, then play it</span></h1>
+  </header>
+
   <div class="toolbar">
-    <button id="modeBtn" title="Toggle Edit/Play (P)">Enter Play</button>
-    <button id="saveBtn" title="Save layout (S)">Save</button>
-    <button id="loadBtn" title="Load layout (L)">Load</button>
-    <button id="clearBtn" title="Clear all">Clear</button>
-    <label class="inline">
-      Grid:
-      <input id="gridToggle" type="checkbox" checked />
-    </label>
-    <span id="hud" class="hud"></span>
+    <button id="modeBtn" class="primary">Enter Play (P)</button>
+    <span class="divider"></span>
+    <button id="toolBtn">Tool: Carve</button>
+    <button id="undoBtn">Undo</button>
+    <button id="clearBtn">Clear</button>
+    <span class="divider"></span>
+    <button id="saveBtn">Save</button>
+    <button id="loadBtn">Load</button>
+    <button id="exportBtn">Export</button>
+    <button id="importBtn">Import</button>
+    <label class="check"><input id="gridToggle" type="checkbox" checked /> Grid</label>
   </div>
 
-  <p class="instructions">
-    <b>Edit (Top-Down):</b> Click-drag on the map to draw walls. Ctrl+Z undo.
-    <b>Play:</b> Click canvas, <kbd>WASD</kbd> move, <kbd>Space</kbd> jump, <kbd>Ctrl</kbd> crouch, <kbd>P</kbd> toggle.
-  </p>
+  <div id="canvas-container">
+    <div id="crosshair"></div>
+    <div id="scorePanel"></div>
+    <div id="lockOverlay">
+      <div class="lock-card">
+        <strong>Click to play</strong>
+        <span>WASD move &middot; mouse look &middot; click shoot &middot; Esc release &middot; P to edit</span>
+      </div>
+    </div>
+  </div>
 
-  <div id="canvas-container"></div>
+  <p id="hud" class="hud"></p>
 </main>
-
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>

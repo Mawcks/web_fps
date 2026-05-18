@@ -1,6 +1,9 @@
 - [x] Draw rectangles in top-down view
 - [x] Toggle to FPS mode
-- [x] Reverse to solid world with carve-out
-- [x] Add wall collision
-- [ ] Save/load maps
-- [ ] Add enemy/AI/shooting
+- [x] Carve rooms out of a solid world
+- [x] Wall collision
+- [x] Save/load maps (browser storage + JSON export/import)
+- [x] Shooting + targets + score
+- [ ] Enemies / AI
+- [ ] Multiple floors / stairs
+- [ ] Textured surfaces and lighting variety
