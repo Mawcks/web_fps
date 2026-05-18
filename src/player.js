@@ -3,8 +3,8 @@
  *
  * Movement uses accel/decel toward a target velocity. Collision treats walls
  * as 2D rectangles in the XZ plane plus a floor/ceiling clamp. Shooting is
- * hitscan with a spread cone (wider while moving or airborne) and recoil that
- * kicks the view up and recovers.
+ * hitscan with a spread cone (wider while moving or airborne) and a fixed
+ * recoil spray pattern that climbs the view.
  */
 
 import * as THREE from 'three';
@@ -26,10 +26,14 @@ const SHOT_SPREAD = 0.011; // each shot blooms the cone by this
 const MAX_SPREAD = 0.085;
 const SPREAD_RECOVER = 9; // bloom decay rate once you stop firing
 
-// Recoil — each shot kicks the view; it recovers when you stop firing.
-const RECOIL_PITCH = 0.013; // upward kick per shot
-const RECOIL_YAW = 0.006; // random sideways kick per shot
-const RECOIL_RECOVER = 7;
+// Recoil — a fixed CS/Valorant-style spray pattern: radians of upward view
+// kick per shot. Pure vertical for now, so it counters with a straight
+// pull-down. The spray index resets after a brief pause in firing.
+const RECOIL_PATTERN = [
+  0.009, 0.019, 0.029, 0.034, 0.036, 0.035, 0.033, 0.031, 0.029, 0.028,
+];
+const SPRAY_RESET = 0.3; // seconds without firing before the pattern resets
+const CONVERGE_DIST = 18; // gun barrel toes in to meet the aim ray at this range
 
 /** Nudge a unit direction to a random point inside a cone of `halfAngle`. */
 function applySpread(dir, halfAngle) {
@@ -67,8 +71,8 @@ export class Player {
     this.hitMeshes = []; // meshes the hitscan ray can hit (walls/floor/ceiling)
 
     this.spread = 0; // accumulated spray bloom
-    this._recoilPitch = 0; // recoil added to the view, awaiting recovery
-    this._recoilYaw = 0;
+    this._recoilIndex = 0; // current position in the spray pattern
+    this._timeSinceShot = 999; // gates the spray-pattern reset
 
     this.walkSpeed = 4.8;
     this.sprintSpeed = 7.6;
@@ -114,7 +118,10 @@ export class Player {
 
     this._gunRest = new THREE.Vector3(0.26, -0.26, -0.55);
     gun.position.copy(this._gunRest);
-    gun.rotation.y = -0.06;
+    // toe the barrel in so it converges with the aim ray — the bullet then
+    // travels along the barrel instead of slanting off toward screen center
+    const convergeDir = new THREE.Vector3(0, 0, -CONVERGE_DIST).sub(this._gunRest).normalize();
+    gun.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), convergeDir);
     this.gun = gun;
     this._gunRecoil = 0;
     this.camera.add(gun);
@@ -144,8 +151,8 @@ export class Player {
     this.onGround = true;
     this.height = STAND_HEIGHT;
     this.spread = 0;
-    this._recoilPitch = 0;
-    this._recoilYaw = 0;
+    this._recoilIndex = 0;
+    this._timeSinceShot = 999;
     this.camera.rotation.set(0, facing, 0, 'YXZ');
     this._applyCamera();
   }
@@ -254,22 +261,16 @@ export class Player {
   }
 
   update(dt, keys) {
-    // gun recoil always eases back so it settles even between modes
+    // gun viewmodel kicks straight back (no pitch) so the barrel stays on the
+    // aim line; the camera recoil pattern carries the visible climb
     this._gunRecoil += (0 - this._gunRecoil) * (1 - Math.exp(-16 * dt));
-    this.gun.position.z = this._gunRest.z + this._gunRecoil * 0.12;
-    this.gun.position.y = this._gunRest.y + this._gunRecoil * 0.04;
-    this.gun.rotation.x = this._gunRecoil * 0.25;
+    this.gun.position.z = this._gunRest.z + this._gunRecoil * 0.14;
+    this.gun.position.y = this._gunRest.y + this._gunRecoil * 0.03;
     if (this._shootTimer > 0) this._shootTimer -= dt;
 
     if (!this.enabled) return;
 
-    // recoil recovers — give back the kick a fraction at a time
-    const rp = this._recoilPitch * (1 - Math.exp(-RECOIL_RECOVER * dt));
-    const ry = this._recoilYaw * (1 - Math.exp(-RECOIL_RECOVER * dt));
-    this.camera.rotation.x -= rp;
-    this.camera.rotation.y -= ry;
-    this._recoilPitch -= rp;
-    this._recoilYaw -= ry;
+    this._timeSinceShot += dt;
     this.spread += (0 - this.spread) * (1 - Math.exp(-SPREAD_RECOVER * dt));
 
     this._stepMovement(dt, keys);
@@ -317,13 +318,11 @@ export class Player {
     this._shootTimer = SHOOT_COOLDOWN;
     this._gunRecoil = 1;
 
-    // recoil — kick the view up and a little sideways (recovers in update)
-    const kickPitch = RECOIL_PITCH * (0.8 + Math.random() * 0.4);
-    const kickYaw = (Math.random() - 0.5) * 2 * RECOIL_YAW;
-    this.camera.rotation.x += kickPitch;
-    this.camera.rotation.y += kickYaw;
-    this._recoilPitch += kickPitch;
-    this._recoilYaw += kickYaw;
+    // recoil — advance the spray pattern (resets after a pause), kick the view
+    if (this._timeSinceShot > SPRAY_RESET) this._recoilIndex = 0;
+    else this._recoilIndex = Math.min(this._recoilIndex + 1, RECOIL_PATTERN.length - 1);
+    this._timeSinceShot = 0;
+    this.camera.rotation.x += RECOIL_PATTERN[this._recoilIndex];
 
     // shot goes where the (kicked) view points, nudged inside the spread cone
     const from = this.camera.position.clone();
