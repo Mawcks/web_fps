@@ -12,6 +12,8 @@ import { buildPlayWorld, buildEditView, disposeGroup, makeTarget } from './build
 import { Editor } from './editor.js';
 import { Player } from './player.js';
 import { settings, loadSettings, pointerSpeedFor, mountSettings } from './settings.js';
+import { Net } from './net.js';
+import { Avatars } from './avatars.js';
 
 const EDIT_CAM_HEIGHT = 100;
 const TRANSITION_MS = 900;
@@ -20,7 +22,7 @@ const SAVE_KEY = 'web_fps_map_v1';
 
 let scene, renderer, container;
 let perspCam, orthoCam, activeCamera;
-let grid, editor, player, settingsUI;
+let grid, editor, player, settingsUI, net, avatars;
 let gridHelper, editGroup;
 let playGroup = null;
 let targetsGroup;
@@ -39,6 +41,8 @@ let firing = false;
 const keys = new Set();
 const editView = { cx: 0, cz: 0, halfW: 24, halfD: 24, zoom: 1 };
 let lastTime = performance.now();
+let lastMoveSent = 0;
+let mpFirstState = false;
 
 const ui = {};
 
@@ -84,12 +88,15 @@ function init() {
   player.gun.visible = false;
   player.torch.visible = false;
 
+  net = new Net();
+  avatars = new Avatars(scene);
+  avatars.setVisible(false);
+
   editor = new Editor({
     camera: orthoCam,
     domElement: renderer.domElement,
-    grid,
     scene,
-    onChange: onGridChanged,
+    onCarve: handleCarveIntent,
   });
   editor.setEnabled(true);
 
@@ -99,10 +106,20 @@ function init() {
 
   cacheUi();
   bindUi();
+  bindMpUi();
   bindInput();
+  setupNet();
   window.addEventListener('resize', onResize);
 
   player.controls.addEventListener('unlock', onPointerUnlock);
+
+  ui.mpName.value = localStorage.getItem('web_fps_name') || '';
+  ui.mpServer.value = defaultServerUrl();
+  const roomParam = new URLSearchParams(location.search).get('room');
+  if (roomParam) {
+    ui.mpCode.value = roomParam.toUpperCase().slice(0, 4);
+    openMpModal();
+  }
 
   fitEditCamera();
   refreshHud();
@@ -126,7 +143,9 @@ function cacheUi() {
   for (const id of [
     'modeBtn', 'toolBtn', 'undoBtn', 'clearBtn', 'saveBtn', 'loadBtn',
     'exportBtn', 'importBtn', 'gridToggle', 'hud', 'scorePanel', 'lockOverlay',
-    'crosshair', 'settingsBtn',
+    'crosshair', 'settingsBtn', 'mpBtn', 'mpPanel', 'mpModal', 'mpCloseBtn',
+    'mpJoinView', 'mpRoomView', 'mpName', 'mpServer', 'mpCreateBtn', 'mpCode',
+    'mpJoinBtn', 'mpError', 'mpRoomCode', 'mpCopyBtn', 'mpLeaveBtn',
   ]) {
     ui[id] = document.getElementById(id);
   }
@@ -140,10 +159,12 @@ function cacheUi() {
 function bindUi() {
   ui.modeBtn.addEventListener('click', toggleMode);
   ui.toolBtn.addEventListener('click', toggleTool);
-  ui.undoBtn.addEventListener('click', () => {
-    if (grid.undo()) onGridChanged();
-  });
+  ui.undoBtn.addEventListener('click', doUndo);
   ui.clearBtn.addEventListener('click', () => {
+    if (net.inRoom) {
+      flash('Clear is off in multiplayer');
+      return;
+    }
     grid.clear();
     onGridChanged();
     fitEditCamera();
@@ -151,6 +172,10 @@ function bindUi() {
   });
   ui.saveBtn.addEventListener('click', saveToStorage);
   ui.loadBtn.addEventListener('click', () => {
+    if (net.inRoom) {
+      flash('Load is off in multiplayer');
+      return;
+    }
     if (loadFromStorage()) {
       onGridChanged();
       fitEditCamera();
@@ -160,7 +185,13 @@ function bindUi() {
     }
   });
   ui.exportBtn.addEventListener('click', exportMap);
-  ui.importBtn.addEventListener('click', () => ui.fileInput.click());
+  ui.importBtn.addEventListener('click', () => {
+    if (net.inRoom) {
+      flash('Import is off in multiplayer');
+      return;
+    }
+    ui.fileInput.click();
+  });
   ui.fileInput.addEventListener('change', importMap);
   ui.gridToggle.addEventListener('change', () => {
     gridHelper.visible = ui.gridToggle.checked && mode === 'edit';
@@ -186,7 +217,7 @@ function bindInput() {
     if (mode === 'edit') {
       if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        if (grid.undo()) onGridChanged();
+        doUndo();
       }
       if (e.code === 'KeyS' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
@@ -250,14 +281,7 @@ function enterPlay() {
     return;
   }
 
-  const built = buildPlayWorld(grid);
-  if (playGroup) {
-    scene.remove(playGroup);
-    disposeGroup(playGroup);
-  }
-  playGroup = built.group;
-  scene.add(playGroup);
-  player.setColliders(built.colliders);
+  rebuildPlayWorld();
 
   const spawn = grid.spawnPoint();
   player.spawnAt(spawn.x, spawn.z, 0);
@@ -270,6 +294,7 @@ function enterPlay() {
   gridHelper.visible = false;
   playGroup.visible = true;
   targetsGroup.visible = true;
+  avatars.setVisible(true);
   player.gun.visible = true;
   player.torch.visible = true;
   document.body.classList.add('playing');
@@ -305,6 +330,7 @@ function enterEdit() {
 
   if (playGroup) playGroup.visible = false;
   targetsGroup.visible = false;
+  avatars.setVisible(false);
   clearTargets();
   editGroup.visible = true;
   gridHelper.visible = ui.gridToggle.checked;
@@ -464,6 +490,186 @@ function importMap(e) {
   e.target.value = '';
 }
 
+/** ====== Multiplayer ====== */
+function defaultServerUrl() {
+  const fromParam = new URLSearchParams(location.search).get('server');
+  if (fromParam) return fromParam;
+  if (location.port === '5173') return 'ws://localhost:8787'; // Vite dev server
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${location.host}`;
+}
+
+function handleCarveIntent(type, x, z, w, d) {
+  if (net.inRoom) {
+    net.carve(type, x, z, w, d);
+  } else {
+    grid.addOp(type, x, z, w, d);
+    onGridChanged();
+  }
+}
+
+function doUndo() {
+  if (net.inRoom) net.undo();
+  else if (grid.undo()) onGridChanged();
+}
+
+/** Rebuild the 3D play world from the current grid (also used on live edits). */
+function rebuildPlayWorld() {
+  const built = buildPlayWorld(grid);
+  if (playGroup) {
+    scene.remove(playGroup);
+    disposeGroup(playGroup);
+  }
+  playGroup = built.group;
+  playGroup.visible = mode === 'play';
+  scene.add(playGroup);
+  player.setColliders(built.colliders);
+}
+
+function setupNet() {
+  net.on('joined', () => {
+    mpFirstState = true;
+    avatars.clear();
+    showMpRoomView();
+  });
+  net.on('state', (m) => {
+    grid.loadJSON({ ops: m.ops });
+    onGridChanged();
+    if (mode === 'play') rebuildPlayWorld();
+    renderRoster(m.players);
+    if (mpFirstState) {
+      mpFirstState = false;
+      fitEditCamera();
+    }
+  });
+  net.on('reject', (m) => flash(m.reason));
+  net.on('error', (m) => {
+    mpError(m.reason);
+    net.disconnect();
+  });
+  net.on('moved', (m) => avatars.set(m.id, m));
+  net.on('left', (m) => avatars.remove(m.id));
+  net.on('closed', (m) => {
+    resetMpUi();
+    if (m.wasInRoom) flash('Disconnected from the room');
+  });
+  net.on('neterror', (m) => mpError((m && m.reason) || 'Connection error'));
+}
+
+function bindMpUi() {
+  ui.mpBtn.addEventListener('click', () => {
+    if (player.isLocked) player.unlock();
+    openMpModal();
+  });
+  ui.mpModal.addEventListener('click', () => ui.mpModal.classList.remove('open'));
+  ui.mpModal.querySelector('.settings-card').addEventListener('click', (e) => e.stopPropagation());
+  ui.mpCloseBtn.addEventListener('click', () => ui.mpModal.classList.remove('open'));
+  ui.mpCreateBtn.addEventListener('click', () => connectToRoom(true));
+  ui.mpJoinBtn.addEventListener('click', () => connectToRoom(false));
+  ui.mpCode.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') connectToRoom(false);
+  });
+  ui.mpLeaveBtn.addEventListener('click', () => {
+    net.disconnect();
+    resetMpUi();
+    flash('Left the room');
+  });
+  ui.mpCopyBtn.addEventListener('click', copyInviteLink);
+}
+
+function connectToRoom(create) {
+  const name = (ui.mpName.value.trim() || 'Player').slice(0, 16);
+  ui.mpName.value = name;
+  localStorage.setItem('web_fps_name', name);
+  mpError('');
+  const url = ui.mpServer.value.trim() || defaultServerUrl();
+  if (create) {
+    net.connect(url, { create: true, name });
+  } else {
+    const code = ui.mpCode.value.trim().toUpperCase();
+    if (code.length !== 4) {
+      mpError('Enter the 4-character room code');
+      return;
+    }
+    net.connect(url, { room: code, name });
+  }
+}
+
+function openMpModal() {
+  if (net.inRoom) showMpRoomView();
+  else showMpJoinView();
+  ui.mpModal.classList.add('open');
+}
+
+function showMpJoinView() {
+  ui.mpJoinView.hidden = false;
+  ui.mpRoomView.hidden = true;
+}
+
+function showMpRoomView() {
+  ui.mpJoinView.hidden = true;
+  ui.mpRoomView.hidden = false;
+  ui.mpRoomCode.textContent = net.room || '----';
+}
+
+function resetMpUi() {
+  avatars.clear();
+  ui.mpPanel.hidden = true;
+  showMpJoinView();
+}
+
+function mpError(text) {
+  ui.mpError.textContent = text || '';
+}
+
+function copyInviteLink() {
+  const url = new URL(location.href);
+  url.search = '';
+  url.searchParams.set('room', net.room);
+  const server = ui.mpServer.value.trim();
+  if (server && server !== defaultServerUrl()) url.searchParams.set('server', server);
+  navigator.clipboard.writeText(url.toString()).then(
+    () => flash('Invite link copied'),
+    () => flash('Copy failed'),
+  );
+}
+
+function renderRoster(players) {
+  if (!net.inRoom) {
+    ui.mpPanel.hidden = true;
+    return;
+  }
+  ui.mpPanel.hidden = false;
+  ui.mpPanel.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'mp-head';
+  head.append('Room ');
+  const code = document.createElement('b');
+  code.textContent = net.room;
+  head.append(code);
+  ui.mpPanel.append(head);
+  for (const p of players) {
+    const row = document.createElement('div');
+    row.className = 'mp-row' + (p.id === net.selfId ? ' self' : '');
+    const dot = document.createElement('span');
+    dot.className = 'mp-dot';
+    dot.style.background = p.color;
+    const name = document.createElement('span');
+    name.className = 'mp-name';
+    name.textContent = p.name;
+    const bar = document.createElement('span');
+    bar.className = 'mp-bar';
+    const fill = document.createElement('i');
+    fill.style.width = Math.min(100, (p.used / net.tileBudget) * 100) + '%';
+    bar.append(fill);
+    const tiles = document.createElement('span');
+    tiles.className = 'mp-tiles';
+    tiles.textContent = `${p.used} / ${net.tileBudget}`;
+    row.append(dot, name, bar, tiles);
+    ui.mpPanel.append(row);
+  }
+}
+
 /** ====== Camera & layout ====== */
 function fitEditCamera() {
   const b = grid.bounds();
@@ -563,6 +769,14 @@ function animate() {
     player.update(dt, keys); // keeps the gun viewmodel settled
   }
 
+  if (net.inRoom) {
+    avatars.update(dt);
+    if (now - lastMoveSent > 80) {
+      lastMoveSent = now;
+      net.move(player.feet.x, player.feet.z, player.camera.rotation.y, mode === 'play' && !transition);
+    }
+  }
+
   muzzleFlash = Math.max(0, muzzleFlash - dt * 9);
   player.torch.intensity = 1.0 + muzzleFlash * 2.4;
 
@@ -579,6 +793,8 @@ if (import.meta.env.DEV) {
     get targets() { return targets; },
     get transition() { return transition; },
     get renderer() { return renderer; },
+    get net() { return net; },
+    get avatars() { return avatars; },
     enterPlay,
     enterEdit,
   };

@@ -9,11 +9,10 @@
 import * as THREE from 'three';
 
 export class Editor {
-  constructor({ camera, domElement, grid, scene, onChange }) {
+  constructor({ camera, domElement, scene, onCarve }) {
     this.camera = camera;
     this.domElement = domElement;
-    this.grid = grid;
-    this.onChange = onChange;
+    this.onCarve = onCarve;
     this.tool = 'carve';
     this.enabled = false;
 
@@ -111,8 +110,7 @@ export class Editor {
     this._dragStart = null;
     this._rect = null;
     if (rect) {
-      this.grid.addOp(this.tool === 'carve' ? 'carve' : 'fill', rect.x, rect.z, rect.w, rect.d);
-      this.onChange();
+      this.onCarve(this.tool === 'carve' ? 'carve' : 'fill', rect.x, rect.z, rect.w, rect.d);
     }
   }
 }

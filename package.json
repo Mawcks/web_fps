@@ -1,13 +1,16 @@
 {
   "name": "web-fps-vite",
-  "version": "0.5.0",
+  "version": "0.6.0",
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "server": "node server/index.js"
   },
   "dependencies": {
-    "three": "^0.158.0"
+    "three": "^0.158.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "vite": "^5.0.0"

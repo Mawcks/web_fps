@@ -4,6 +4,9 @@
 - [x] Wall collision
 - [x] Save/load maps (browser storage + JSON export/import)
 - [x] Shooting + targets + score
+- [x] Configurable sensitivity and keybinds
+- [x] Multiplayer co-op carving (rooms, tile budgets, presence)
 - [ ] Enemies / AI
 - [ ] Multiple floors / stairs
 - [ ] Textured surfaces and lighting variety
+- [ ] See other players' shots / simple PvP

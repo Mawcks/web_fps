@@ -25,6 +25,7 @@
     <button id="importBtn">Import</button>
     <label class="check"><input id="gridToggle" type="checkbox" checked /> Grid</label>
     <span class="divider"></span>
+    <button id="mpBtn">Multiplayer</button>
     <button id="settingsBtn">Settings</button>
   </div>
 
@@ -37,10 +38,60 @@
         <span>WASD move &middot; mouse look &middot; click shoot &middot; Esc release &middot; P to edit</span>
       </div>
     </div>
+    <div id="mpPanel" hidden></div>
   </div>
 
   <p id="hud" class="hud"></p>
 </main>
+
+<div id="mpModal" class="modal">
+  <div class="settings-card">
+    <div class="settings-head">
+      <strong>Multiplayer</strong>
+      <button class="settings-x" id="mpCloseBtn" type="button" aria-label="Close">&times;</button>
+    </div>
+
+    <div id="mpJoinView">
+      <section>
+        <p class="settings-note">
+          Carve a world together — everyone shares a tile budget. One player creates a
+          room and shares the invite link; the others join with it.
+        </p>
+        <label class="settings-field">
+          <span>Your name</span>
+          <input id="mpName" type="text" maxlength="16" placeholder="Player" />
+        </label>
+        <label class="settings-field">
+          <span>Server</span>
+          <input id="mpServer" type="text" />
+        </label>
+      </section>
+      <section>
+        <button id="mpCreateBtn" class="primary mp-wide" type="button">Create a room</button>
+      </section>
+      <section>
+        <h3>Join a room</h3>
+        <div class="mp-join-row">
+          <input id="mpCode" type="text" maxlength="4" placeholder="CODE" />
+          <button id="mpJoinBtn" type="button">Join</button>
+        </div>
+      </section>
+      <p class="settings-note mp-error" id="mpError"></p>
+    </div>
+
+    <div id="mpRoomView" hidden>
+      <section>
+        <p class="settings-note">You're in room</p>
+        <div class="mp-roomcode" id="mpRoomCode">----</div>
+      </section>
+      <section>
+        <button id="mpCopyBtn" class="primary mp-wide" type="button">Copy invite link</button>
+        <button id="mpLeaveBtn" class="mp-wide" type="button">Leave room</button>
+      </section>
+    </div>
+  </div>
+</div>
+
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>
