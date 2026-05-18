@@ -1,5 +1,5 @@
 /**
- * Settings — mouse sensitivity and keybinds, plus the settings modal.
+ * Settings — mouse sensitivity, keybinds, and crosshair, plus the settings modal.
  *
  * Sensitivity is stored as a Valorant sens value so it can be matched against
  * other shooters. Pointer Lock's `unadjustedMovement` (Chromium) gives raw
@@ -24,6 +24,15 @@ const DEFAULT_BINDS = {
   crouch: 'KeyC',
 };
 
+const DEFAULT_CROSSHAIR = {
+  color: '#33ffaa',
+  size: 9,
+  gap: 4,
+  thickness: 2,
+  dot: false,
+  outline: true,
+};
+
 const ACTIONS = [
   ['forward', 'Move forward'],
   ['back', 'Move back'],
@@ -38,7 +47,10 @@ export const settings = {
   valorantSens: 0.8,
   dpi: 400,
   binds: { ...DEFAULT_BINDS },
+  crosshair: { ...DEFAULT_CROSSHAIR },
 };
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /** The PointerLockControls.pointerSpeed that reproduces a given Valorant sens. */
 export function pointerSpeedFor(valorantSens) {
@@ -63,6 +75,15 @@ export function loadSettings() {
         if (typeof d.binds[action] === 'string') settings.binds[action] = d.binds[action];
       }
     }
+    if (d.crosshair) {
+      const c = d.crosshair;
+      if (typeof c.color === 'string') settings.crosshair.color = c.color;
+      if (Number.isFinite(c.size)) settings.crosshair.size = c.size;
+      if (Number.isFinite(c.gap)) settings.crosshair.gap = c.gap;
+      if (Number.isFinite(c.thickness)) settings.crosshair.thickness = c.thickness;
+      if (typeof c.dot === 'boolean') settings.crosshair.dot = c.dot;
+      if (typeof c.outline === 'boolean') settings.crosshair.outline = c.outline;
+    }
   } catch (err) {
     console.warn('Settings load failed:', err);
   }
@@ -70,6 +91,51 @@ export function loadSettings() {
 
 export function saveSettings() {
   localStorage.setItem(STORE_KEY, JSON.stringify(settings));
+}
+
+/**
+ * Build (once) and style a crosshair inside `anchor` — a zero-size element
+ * whose origin is the crosshair's center. Used for the real crosshair and the
+ * settings preview alike.
+ */
+export function applyCrosshairTo(anchor, c) {
+  if (!anchor) return;
+  let lines = anchor._chLines;
+  if (!lines) {
+    anchor.textContent = '';
+    lines = [];
+    for (let i = 0; i < 4; i++) {
+      const el = document.createElement('div');
+      el.className = 'ch-line';
+      anchor.append(el);
+      lines.push(el);
+    }
+    const dotEl = document.createElement('div');
+    dotEl.className = 'ch-dot';
+    anchor.append(dotEl);
+    anchor._chLines = lines;
+    anchor._chDot = dotEl;
+  }
+  const dot = anchor._chDot;
+  const t = c.thickness;
+  const len = c.size;
+  const gap = c.gap;
+  const shadow = c.outline ? '0 0 0 1px rgba(0, 0, 0, 0.92)' : 'none';
+  const place = (el, w, h, x, y) => {
+    el.style.width = w + 'px';
+    el.style.height = h + 'px';
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    el.style.background = c.color;
+    el.style.boxShadow = shadow;
+  };
+  const [top, bottom, left, right] = lines;
+  place(top, t, len, -t / 2, -(gap + len));
+  place(bottom, t, len, -t / 2, gap);
+  place(left, len, t, -(gap + len), -t / 2);
+  place(right, len, t, gap, -t / 2);
+  place(dot, t, t, -t / 2, -t / 2);
+  dot.style.display = c.dot ? 'block' : 'none';
 }
 
 function keyLabel(code) {
@@ -124,6 +190,34 @@ export function mountSettings({ onChange }) {
         </p>
       </section>
       <section>
+        <h3>Crosshair</h3>
+        <div class="ch-preview"><div class="ch-anchor"></div></div>
+        <label class="settings-field">
+          <span>Color</span>
+          <input id="ch-color" type="color" />
+        </label>
+        <label class="settings-field">
+          <span>Length</span>
+          <input id="ch-size" type="number" min="0" max="40" step="1" />
+        </label>
+        <label class="settings-field">
+          <span>Gap</span>
+          <input id="ch-gap" type="number" min="0" max="40" step="1" />
+        </label>
+        <label class="settings-field">
+          <span>Thickness</span>
+          <input id="ch-thick" type="number" min="1" max="10" step="1" />
+        </label>
+        <label class="settings-field">
+          <span>Center dot</span>
+          <input id="ch-dot" type="checkbox" />
+        </label>
+        <label class="settings-field">
+          <span>Outline</span>
+          <input id="ch-outline" type="checkbox" />
+        </label>
+      </section>
+      <section>
         <h3>Keybinds</h3>
         <div id="set-binds" class="bind-list"></div>
       </section>
@@ -139,6 +233,13 @@ export function mountSettings({ onChange }) {
   const dpiInput = modal.querySelector('#set-dpi');
   const cm360El = modal.querySelector('#set-cm360');
   const bindList = modal.querySelector('#set-binds');
+  const chColor = modal.querySelector('#ch-color');
+  const chSize = modal.querySelector('#ch-size');
+  const chGap = modal.querySelector('#ch-gap');
+  const chThick = modal.querySelector('#ch-thick');
+  const chDot = modal.querySelector('#ch-dot');
+  const chOutline = modal.querySelector('#ch-outline');
+  const chAnchor = modal.querySelector('.ch-anchor');
 
   modal.querySelector('.settings-card').addEventListener('click', (e) => e.stopPropagation());
   modal.addEventListener('click', () => close());
@@ -187,6 +288,19 @@ export function mountSettings({ onChange }) {
     }
   }
 
+  function crosshairChanged() {
+    const c = settings.crosshair;
+    c.color = chColor.value;
+    c.size = clamp(parseInt(chSize.value, 10) || 0, 0, 40);
+    c.gap = clamp(parseInt(chGap.value, 10) || 0, 0, 40);
+    c.thickness = clamp(parseInt(chThick.value, 10) || 1, 1, 10);
+    c.dot = chDot.checked;
+    c.outline = chOutline.checked;
+    saveSettings();
+    applyCrosshairTo(chAnchor, c);
+    onChange();
+  }
+
   sensInput.addEventListener('input', () => {
     const v = parseFloat(sensInput.value);
     if (Number.isFinite(v) && v > 0) {
@@ -204,10 +318,15 @@ export function mountSettings({ onChange }) {
       refreshCm360();
     }
   });
+  for (const el of [chColor, chSize, chGap, chThick, chDot, chOutline]) {
+    el.addEventListener('input', crosshairChanged);
+    el.addEventListener('change', crosshairChanged);
+  }
   modal.querySelector('#set-reset').addEventListener('click', () => {
     settings.valorantSens = 0.8;
     settings.dpi = 400;
     settings.binds = { ...DEFAULT_BINDS };
+    settings.crosshair = { ...DEFAULT_CROSSHAIR };
     saveSettings();
     onChange();
     syncFields();
@@ -218,6 +337,14 @@ export function mountSettings({ onChange }) {
     dpiInput.value = settings.dpi;
     refreshCm360();
     refreshBinds();
+    const c = settings.crosshair;
+    chColor.value = c.color;
+    chSize.value = c.size;
+    chGap.value = c.gap;
+    chThick.value = c.thickness;
+    chDot.checked = c.dot;
+    chOutline.checked = c.outline;
+    applyCrosshairTo(chAnchor, c);
   }
 
   function open() {

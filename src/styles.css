@@ -132,47 +132,46 @@ button#toolBtn.erase {
   min-height: 1.1em;
 }
 
-/* ===== Crosshair (play mode only) ===== */
+/* ===== Crosshair ===== */
 #crosshair {
   display: none;
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 22px;
-  height: 22px;
-  transform: translate(-50%, -50%);
+  width: 0;
+  height: 0;
   pointer-events: none;
 }
 body.playing #crosshair {
   display: block;
 }
-#crosshair::before,
-#crosshair::after {
-  content: '';
+.ch-line,
+.ch-dot {
   position: absolute;
-  background: rgba(255, 255, 255, 0.85);
-  box-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
 }
-#crosshair::before {
+
+.ch-preview {
+  position: relative;
+  height: 92px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #222a33, #0c0f13);
+  border: 1px solid var(--border);
+  margin-bottom: 0.6rem;
+  overflow: hidden;
+}
+.ch-anchor {
+  position: absolute;
   left: 50%;
-  top: 0;
-  width: 2px;
-  height: 100%;
-  transform: translateX(-50%);
-}
-#crosshair::after {
   top: 50%;
-  left: 0;
-  height: 2px;
-  width: 100%;
-  transform: translateY(-50%);
+  width: 0;
+  height: 0;
 }
-#crosshair.hit::before,
-#crosshair.hit::after {
-  background: #ff5a36;
+.settings-field input[type='checkbox'] {
+  width: auto;
 }
-#crosshair.hit {
-  transform: translate(-50%, -50%) scale(1.35);
+.settings-field input[type='color'] {
+  padding: 0.15rem;
+  height: 30px;
 }
 
 /* ===== Score panel ===== */

@@ -8,16 +8,15 @@
 
 import * as THREE from 'three';
 import { Grid } from './grid.js';
-import { buildPlayWorld, buildEditView, disposeGroup, makeTarget } from './builder.js';
+import { buildPlayWorld, buildEditView, disposeGroup } from './builder.js';
 import { Editor } from './editor.js';
 import { Player } from './player.js';
-import { settings, loadSettings, pointerSpeedFor, mountSettings } from './settings.js';
+import { settings, loadSettings, pointerSpeedFor, mountSettings, applyCrosshairTo } from './settings.js';
 import { Net } from './net.js';
 import { Avatars } from './avatars.js';
 
 const EDIT_CAM_HEIGHT = 100;
 const TRANSITION_MS = 900;
-const TARGET_COUNT = 10;
 const SAVE_KEY = 'web_fps_map_v1';
 
 let scene, renderer, container;
@@ -25,17 +24,12 @@ let perspCam, orthoCam, activeCamera;
 let grid, editor, player, settingsUI, net, avatars;
 let gridHelper, editGroup;
 let playGroup = null;
-let targetsGroup;
 
 let mode = 'edit'; // 'edit' | 'play'
 let transition = null; // { start, fromPos, toPos, fromQuat, toQuat }
 let playFog; // applied only in play mode — would hide the top-down editor
-const targets = [];
 const tracers = [];
 let muzzleFlash = 0;
-let score = 0;
-let shots = 0;
-let hits = 0;
 let firing = false;
 
 const keys = new Set();
@@ -81,9 +75,6 @@ function init() {
   editGroup = buildEditView(grid);
   scene.add(editGroup);
 
-  targetsGroup = new THREE.Group();
-  scene.add(targetsGroup);
-
   player = new Player(perspCam, renderer.domElement);
   player.gun.visible = false;
   player.torch.visible = false;
@@ -101,10 +92,10 @@ function init() {
   editor.setEnabled(true);
 
   loadSettings();
-  applySettings();
-  settingsUI = mountSettings({ onChange: applySettings });
 
   cacheUi();
+  applySettings();
+  settingsUI = mountSettings({ onChange: applySettings });
   bindUi();
   bindMpUi();
   bindInput();
@@ -133,10 +124,11 @@ function seedStarterMap() {
   grid.addOp('carve', 15, -7, 11, 14);
 }
 
-/** Push the current settings into the player (sensitivity + keybinds). */
+/** Push the current settings into the player and crosshair. */
 function applySettings() {
   player.binds = settings.binds;
   player.controls.pointerSpeed = pointerSpeedFor(settings.valorantSens);
+  applyCrosshairTo(ui.crosshair, settings.crosshair);
 }
 
 function cacheUi() {
@@ -285,7 +277,6 @@ function enterPlay() {
 
   const spawn = grid.spawnPoint();
   player.spawnAt(spawn.x, spawn.z, 0);
-  spawnTargets();
 
   mode = 'play';
   scene.fog = playFog;
@@ -293,15 +284,10 @@ function enterPlay() {
   editGroup.visible = false;
   gridHelper.visible = false;
   playGroup.visible = true;
-  targetsGroup.visible = true;
   avatars.setVisible(true);
   player.gun.visible = true;
   player.torch.visible = true;
   document.body.classList.add('playing');
-
-  score = 0;
-  shots = 0;
-  hits = 0;
 
   // swoop the camera down from the top-down view into the player's eyes
   const downQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0, 'YXZ'));
@@ -329,9 +315,7 @@ function enterEdit() {
   player.torch.visible = false;
 
   if (playGroup) playGroup.visible = false;
-  targetsGroup.visible = false;
   avatars.setVisible(false);
-  clearTargets();
   editGroup.visible = true;
   gridHelper.visible = ui.gridToggle.checked;
   editor.setEnabled(true);
@@ -351,51 +335,13 @@ function onPointerUnlock() {
   }
 }
 
-/** ====== Targets & shooting ====== */
-function spawnTargets() {
-  clearTargets();
-  const points = grid.randomOpenPoints(TARGET_COUNT);
-  for (const p of points) {
-    const t = makeTarget();
-    placeTarget(t, p);
-    t.userData.alive = true;
-    t.userData.popT = 0;
-    targetsGroup.add(t);
-    targets.push(t);
-  }
-}
-
-function placeTarget(t, p) {
-  t.position.set(p.x, 0.9 + Math.random() * 1.6, p.z);
-  t.userData.baseY = t.position.y;
-  t.scale.setScalar(1);
-}
-
-function clearTargets() {
-  for (const t of targets) {
-    targetsGroup.remove(t);
-    t.geometry.dispose();
-  }
-  targets.length = 0;
-}
-
-function handleFiring(dt) {
+/** ====== Shooting ====== */
+function handleFiring() {
   if (!firing || !player.isLocked) return;
-  const liveTargets = targets.filter((t) => t.userData.alive);
-  const shot = player.shoot(liveTargets);
+  const shot = player.shoot([]);
   if (!shot) return;
-  shots++;
   muzzleFlash = 1;
   spawnTracer(shot.from, shot.to);
-  if (shot.target) {
-    hits++;
-    score++;
-    shot.target.userData.alive = false;
-    shot.target.userData.popT = 0.2;
-    ui.crosshair.classList.add('hit');
-    setTimeout(() => ui.crosshair.classList.remove('hit'), 110);
-  }
-  refreshHud();
 }
 
 function spawnTracer(from, to) {
@@ -404,27 +350,6 @@ function spawnTracer(from, to) {
   const line = new THREE.Line(geo, mat);
   scene.add(line);
   tracers.push({ line, life: 0.09, max: 0.09 });
-}
-
-function updateTargets(dt) {
-  const now = performance.now() * 0.001;
-  for (const t of targets) {
-    if (t.userData.alive) {
-      t.rotation.y += t.userData.spin * dt;
-      t.rotation.x += t.userData.spin * 0.4 * dt;
-      t.position.y = t.userData.baseY + Math.sin(now * 2 + t.userData.bobPhase) * 0.12;
-    } else if (t.userData.popT > 0) {
-      t.userData.popT -= dt;
-      const f = Math.max(0, t.userData.popT / 0.2);
-      t.scale.setScalar(f * f);
-      t.rotation.y += 12 * dt;
-      if (t.userData.popT <= 0) {
-        const p = grid.randomOpenPoints(1)[0];
-        if (p) placeTarget(t, p);
-        t.userData.alive = true;
-      }
-    }
-  }
 }
 
 function updateTracers(dt) {
@@ -720,12 +645,8 @@ function refreshHud() {
     ui.hud.textContent = cells
       ? `EDIT · ${cells} cells carved · ${editor.tool} tool`
       : 'EDIT · drag on the map to carve your first room';
-    ui.scorePanel.classList.remove('visible');
   } else {
-    const acc = shots ? Math.round((hits / shots) * 100) : 0;
-    ui.scorePanel.textContent = `Score ${score}   ·   Accuracy ${acc}%`;
-    ui.scorePanel.classList.add('visible');
-    ui.hud.textContent = 'PLAY · WASD move · Shift sprint · C crouch · Space jump · click to shoot';
+    ui.hud.textContent = 'PLAY · WASD move · Shift sprint · C crouch · Space jump · P to edit';
   }
 }
 
@@ -760,9 +681,8 @@ function animate() {
     updateTransition();
   } else if (mode === 'play') {
     player.enabled = player.isLocked;
-    handleFiring(dt);
+    handleFiring();
     player.update(dt, keys);
-    updateTargets(dt);
     updateTracers(dt);
     ui.lockOverlay.classList.toggle('visible', !player.isLocked);
   } else {
@@ -790,7 +710,6 @@ if (import.meta.env.DEV) {
     get grid() { return grid; },
     get player() { return player; },
     get scene() { return scene; },
-    get targets() { return targets; },
     get transition() { return transition; },
     get renderer() { return renderer; },
     get net() { return net; },

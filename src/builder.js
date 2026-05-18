@@ -125,20 +125,3 @@ export function buildEditView(grid) {
 
   return group;
 }
-
-const matTarget = new THREE.MeshStandardMaterial({
-  color: 0xff5a36,
-  emissive: 0xff3a14,
-  emissiveIntensity: 0.9,
-  roughness: 0.4,
-  metalness: 0.1,
-});
-
-/** A shootable target. Caller positions it and tracks it in play mode. */
-export function makeTarget() {
-  const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.32, 0), matTarget.clone());
-  mesh.userData.isTarget = true;
-  mesh.userData.spin = 0.6 + Math.random() * 1.2;
-  mesh.userData.bobPhase = Math.random() * Math.PI * 2;
-  return mesh;
-}
