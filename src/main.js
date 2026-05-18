@@ -14,6 +14,7 @@ import { Player } from './player.js';
 import { settings, loadSettings, pointerSpeedFor, mountSettings, applyCrosshairTo } from './settings.js';
 import { Net } from './net.js';
 import { Avatars } from './avatars.js';
+import { Decals } from './decals.js';
 
 const EDIT_CAM_HEIGHT = 100;
 const TRANSITION_MS = 900;
@@ -21,7 +22,7 @@ const SAVE_KEY = 'web_fps_map_v1';
 
 let scene, renderer, container;
 let perspCam, orthoCam, activeCamera;
-let grid, editor, player, settingsUI, net, avatars;
+let grid, editor, player, settingsUI, net, avatars, decals;
 let gridHelper, editGroup;
 let playGroup = null;
 
@@ -82,6 +83,8 @@ function init() {
   net = new Net();
   avatars = new Avatars(scene);
   avatars.setVisible(false);
+  decals = new Decals(scene);
+  decals.setVisible(false);
 
   editor = new Editor({
     camera: orthoCam,
@@ -285,6 +288,8 @@ function enterPlay() {
   gridHelper.visible = false;
   playGroup.visible = true;
   avatars.setVisible(true);
+  decals.clear();
+  decals.setVisible(true);
   player.gun.visible = true;
   player.torch.visible = true;
   document.body.classList.add('playing');
@@ -316,6 +321,7 @@ function enterEdit() {
 
   if (playGroup) playGroup.visible = false;
   avatars.setVisible(false);
+  decals.setVisible(false);
   editGroup.visible = true;
   gridHelper.visible = ui.gridToggle.checked;
   editor.setEnabled(true);
@@ -338,21 +344,25 @@ function onPointerUnlock() {
 /** ====== Shooting ====== */
 function handleFiring() {
   if (!firing || !player.isLocked) return;
-  const shot = player.shoot([]);
+  const shot = player.shoot();
   if (!shot) return;
   muzzleFlash = 1;
-  spawnTracer(shot.from, shot.to);
+  spawnTracer(shot.to);
+  if (shot.impact) decals.add(shot.impact.point, shot.impact.normal);
 }
 
-function spawnTracer(from, to) {
-  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
-  const mat = new THREE.LineBasicMaterial({ color: 0xffe49a, transparent: true, opacity: 0.95 });
+function spawnTracer(to) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0xffe9a6, transparent: true, opacity: 1 });
   const line = new THREE.Line(geo, mat);
   scene.add(line);
-  tracers.push({ line, life: 0.09, max: 0.09 });
+  tracers.push({ line, life: 0.06, max: 0.06, to: to.clone() });
 }
 
 function updateTracers(dt) {
+  if (tracers.length === 0) return;
+  const muzzle = player.getMuzzle(); // near-end tracks the gun, not a stale point
   for (let i = tracers.length - 1; i >= 0; i--) {
     const tr = tracers[i];
     tr.life -= dt;
@@ -362,7 +372,11 @@ function updateTracers(dt) {
       tr.line.material.dispose();
       tracers.splice(i, 1);
     } else {
-      tr.line.material.opacity = (tr.life / tr.max) * 0.95;
+      const pos = tr.line.geometry.attributes.position;
+      pos.setXYZ(0, muzzle.x, muzzle.y, muzzle.z);
+      pos.setXYZ(1, tr.to.x, tr.to.y, tr.to.z);
+      pos.needsUpdate = true;
+      tr.line.material.opacity = tr.life / tr.max;
     }
   }
 }
@@ -449,6 +463,7 @@ function rebuildPlayWorld() {
   playGroup.visible = mode === 'play';
   scene.add(playGroup);
   player.setColliders(built.colliders);
+  player.hitMeshes = playGroup.children;
 }
 
 function setupNet() {
@@ -714,6 +729,7 @@ if (import.meta.env.DEV) {
     get renderer() { return renderer; },
     get net() { return net; },
     get avatars() { return avatars; },
+    get decals() { return decals; },
     enterPlay,
     enterEdit,
   };

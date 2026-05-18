@@ -2,9 +2,9 @@
  * First-person controller.
  *
  * Movement uses accel/decel toward a target velocity. Collision treats walls
- * as 2D rectangles in the XZ plane (they always span full room height, so the
- * player can never be on top of one) plus a floor/ceiling clamp. Shooting is
- * hitscan: a ray that hits the nearest target unless a wall blocks it first.
+ * as 2D rectangles in the XZ plane plus a floor/ceiling clamp. Shooting is
+ * hitscan with a spread cone (wider while moving or airborne) and recoil that
+ * kicks the view up and recovers.
  */
 
 import * as THREE from 'three';
@@ -15,8 +15,37 @@ const STAND_HEIGHT = 1.8;
 const CROUCH_HEIGHT = 1.15;
 const RADIUS = 0.36;
 const EYE_DROP = 0.18; // eyes sit this far below the top of the head
-const SHOOT_COOLDOWN = 0.14;
+const SHOOT_COOLDOWN = 0.1; // ~600 RPM
 const SHOOT_RANGE = 80;
+
+// Spread — cone half-angle in radians. Standing still is near pin-point.
+const BASE_SPREAD = 0.002;
+const MOVE_SPREAD = 0.05; // added at full walk speed, scaled by current speed
+const AIR_SPREAD = 0.12; // added while airborne
+const SHOT_SPREAD = 0.011; // each shot blooms the cone by this
+const MAX_SPREAD = 0.085;
+const SPREAD_RECOVER = 9; // bloom decay rate once you stop firing
+
+// Recoil — each shot kicks the view; it recovers when you stop firing.
+const RECOIL_PITCH = 0.013; // upward kick per shot
+const RECOIL_YAW = 0.006; // random sideways kick per shot
+const RECOIL_RECOVER = 7;
+
+/** Nudge a unit direction to a random point inside a cone of `halfAngle`. */
+function applySpread(dir, halfAngle) {
+  if (halfAngle <= 1e-5) return dir;
+  const up = Math.abs(dir.y) < 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+  const right = new THREE.Vector3().crossVectors(dir, up).normalize();
+  const realUp = new THREE.Vector3().crossVectors(right, dir).normalize();
+  const ang = halfAngle * Math.sqrt(Math.random()); // sqrt → uniform over the disc
+  const phi = Math.random() * Math.PI * 2;
+  dir
+    .multiplyScalar(Math.cos(ang))
+    .addScaledVector(right, Math.cos(phi) * Math.sin(ang))
+    .addScaledVector(realUp, Math.sin(phi) * Math.sin(ang))
+    .normalize();
+  return dir;
+}
 
 export class Player {
   constructor(camera, domElement) {
@@ -34,7 +63,12 @@ export class Player {
     this.onGround = true;
     this.height = STAND_HEIGHT;
     this.enabled = false;
-    this.colliders = []; // THREE.Box3[]
+    this.colliders = []; // THREE.Box3[] — movement collision
+    this.hitMeshes = []; // meshes the hitscan ray can hit (walls/floor/ceiling)
+
+    this.spread = 0; // accumulated spray bloom
+    this._recoilPitch = 0; // recoil added to the view, awaiting recovery
+    this._recoilYaw = 0;
 
     this.walkSpeed = 4.8;
     this.sprintSpeed = 7.6;
@@ -50,6 +84,7 @@ export class Player {
     this._raycaster.far = SHOOT_RANGE;
 
     this._buildGun();
+    this._muzzleLocal = new THREE.Vector3(0, 0.04, -0.52); // barrel tip, gun-space
     this.torch = new THREE.PointLight(0xfff0d8, 1.0, 26, 1.6);
     this.torch.position.set(0, 0, 0);
     camera.add(this.torch);
@@ -89,12 +124,28 @@ export class Player {
     this.colliders = boxes;
   }
 
+  /** World position of the gun muzzle — the tracer origin. */
+  getMuzzle() {
+    return this.gun.localToWorld(this._muzzleLocal.clone());
+  }
+
+  /** Current spread cone half-angle (radians): movement + air + spray bloom. */
+  _inaccuracy() {
+    const moveFrac = Math.min(this.vel.length() / this.walkSpeed, 1.5);
+    let a = BASE_SPREAD + moveFrac * MOVE_SPREAD + this.spread;
+    if (!this.onGround) a += AIR_SPREAD;
+    return a;
+  }
+
   spawnAt(x, z, facing = 0) {
     this.feet.set(x, 0, z);
     this.vel.set(0, 0, 0);
     this.velY = 0;
     this.onGround = true;
     this.height = STAND_HEIGHT;
+    this.spread = 0;
+    this._recoilPitch = 0;
+    this._recoilYaw = 0;
     this.camera.rotation.set(0, facing, 0, 'YXZ');
     this._applyCamera();
   }
@@ -212,6 +263,15 @@ export class Player {
 
     if (!this.enabled) return;
 
+    // recoil recovers — give back the kick a fraction at a time
+    const rp = this._recoilPitch * (1 - Math.exp(-RECOIL_RECOVER * dt));
+    const ry = this._recoilYaw * (1 - Math.exp(-RECOIL_RECOVER * dt));
+    this.camera.rotation.x -= rp;
+    this.camera.rotation.y -= ry;
+    this._recoilPitch -= rp;
+    this._recoilYaw -= ry;
+    this.spread += (0 - this.spread) * (1 - Math.exp(-SPREAD_RECOVER * dt));
+
     this._stepMovement(dt, keys);
 
     this.velY += this.gravity * dt;
@@ -248,39 +308,40 @@ export class Player {
   }
 
   /**
-   * Fire a hitscan shot.
-   * @returns {null | { target: THREE.Object3D|null, from: THREE.Vector3, to: THREE.Vector3 }}
+   * Fire a hitscan shot: apply recoil + spread, then raycast world geometry.
+   * @returns {null | { to: THREE.Vector3, impact: { point, normal } | null }}
    *          null if still on cooldown.
    */
-  shoot(targets) {
+  shoot() {
     if (this._shootTimer > 0) return null;
     this._shootTimer = SHOOT_COOLDOWN;
     this._gunRecoil = 1;
 
+    // recoil — kick the view up and a little sideways (recovers in update)
+    const kickPitch = RECOIL_PITCH * (0.8 + Math.random() * 0.4);
+    const kickYaw = (Math.random() - 0.5) * 2 * RECOIL_YAW;
+    this.camera.rotation.x += kickPitch;
+    this.camera.rotation.y += kickYaw;
+    this._recoilPitch += kickPitch;
+    this._recoilYaw += kickYaw;
+
+    // shot goes where the (kicked) view points, nudged inside the spread cone
     const from = this.camera.position.clone();
     const dir = new THREE.Vector3();
     this.camera.getWorldDirection(dir);
+    applySpread(dir, this._inaccuracy());
+    this.spread = Math.min(this.spread + SHOT_SPREAD, MAX_SPREAD);
+
     this._raycaster.set(from, dir);
-
-    // nearest wall along the ray blocks the shot
-    let wallDist = SHOOT_RANGE;
-    const tmp = new THREE.Vector3();
-    for (const box of this.colliders) {
-      if (this._raycaster.ray.intersectBox(box, tmp)) {
-        const d = from.distanceTo(tmp);
-        if (d < wallDist) wallDist = d;
-      }
+    this._raycaster.far = SHOOT_RANGE;
+    const hits = this._raycaster.intersectObjects(this.hitMeshes, false);
+    if (hits.length) {
+      const h = hits[0];
+      const normal = h.face
+        ? h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize()
+        : new THREE.Vector3(0, 1, 0);
+      return { to: h.point.clone(), impact: { point: h.point.clone(), normal } };
     }
-
-    let target = null;
-    let endDist = wallDist;
-    const hits = this._raycaster.intersectObjects(targets, false);
-    if (hits.length && hits[0].distance < wallDist) {
-      target = hits[0].object;
-      endDist = hits[0].distance;
-    }
-
-    const to = from.clone().addScaledVector(dir, endDist);
-    return { target, from, to };
+    return { to: from.addScaledVector(dir, SHOOT_RANGE), impact: null };
   }
 }
