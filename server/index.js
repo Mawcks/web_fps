@@ -22,6 +22,18 @@ const TILE_BUDGET = Number(process.env.TILE_BUDGET) || 800;
 const MAX_PLAYERS = 6;
 const PLAYER_COLORS = ['#ff5a36', '#4ea1d3', '#7bd36a', '#e8c14e', '#b06ce8', '#e86ca8'];
 
+// Combat tuning
+const MAX_HP = 100;
+const BODY_DAMAGE = 30;
+const HEAD_DAMAGE = 120; // one-shots a full-HP player
+const PLAYER_RADIUS = 0.42; // hitbox half-width
+const HEAD_FRAC = 0.82; // hits above height*HEAD_FRAC count as headshots
+const RESPAWN_MS = 2500;
+const SHOOT_RANGE = 100;
+const LAG_COMP_MS = 100; // rewind targets by this much for hit checks
+const HISTORY_MS = 700; // position history kept per player
+const SHOT_MIN_INTERVAL = 85; // server-side fire-rate guard (ms)
+
 /** ====== Carve model (open-cell replay, ownership, connectivity) ====== */
 
 // Replay ops into an open-cell set, tracking which player opened each cell.
@@ -117,11 +129,107 @@ function roster(room) {
     color: p.color,
     used: Math.max(0, used.get(p.id) || 0),
     playing: p.playing,
+    kills: p.kills,
+    deaths: p.deaths,
+    alive: p.alive,
   }));
 }
 
 function sendState(room) {
   broadcast(room, { t: 'state', ops: room.ops, players: roster(room) });
+}
+
+/** ====== Combat ====== */
+
+// Ray vs axis-aligned box. Returns the entry distance along the unit ray, or null.
+function rayAABB(o, d, minx, miny, minz, maxx, maxy, maxz) {
+  let tmin = -Infinity;
+  let tmax = Infinity;
+  const slab = (oo, dd, mn, mx) => {
+    if (Math.abs(dd) < 1e-9) return oo >= mn && oo <= mx;
+    let t1 = (mn - oo) / dd;
+    let t2 = (mx - oo) / dd;
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    if (t1 > tmin) tmin = t1;
+    if (t2 < tmax) tmax = t2;
+    return tmin <= tmax;
+  };
+  if (!slab(o.x, d.x, minx, maxx)) return null;
+  if (!slab(o.y, d.y, miny, maxy)) return null;
+  if (!slab(o.z, d.z, minz, maxz)) return null;
+  if (tmax < 0) return null;
+  return tmin >= 0 ? tmin : tmax;
+}
+
+// Is the line of sight from (x0,z0) to (x1,z1) blocked by a solid cell?
+function losBlocked(open, x0, z0, x1, z1) {
+  let cx = Math.floor(x0);
+  let cz = Math.floor(z0);
+  const ex = Math.floor(x1);
+  const ez = Math.floor(z1);
+  const dx = x1 - x0;
+  const dz = z1 - z0;
+  const stepX = Math.sign(dx);
+  const stepZ = Math.sign(dz);
+  let tMaxX = stepX !== 0 ? ((stepX > 0 ? cx + 1 : cx) - x0) / dx : Infinity;
+  let tMaxZ = stepZ !== 0 ? ((stepZ > 0 ? cz + 1 : cz) - z0) / dz : Infinity;
+  const tDeltaX = stepX !== 0 ? Math.abs(1 / dx) : Infinity;
+  const tDeltaZ = stepZ !== 0 ? Math.abs(1 / dz) : Infinity;
+  for (let guard = 0; guard < 4096; guard++) {
+    if (cx === ex && cz === ez) return false;
+    if (tMaxX < tMaxZ) {
+      cx += stepX;
+      tMaxX += tDeltaX;
+    } else {
+      cz += stepZ;
+      tMaxZ += tDeltaZ;
+    }
+    if (!open.has(cx + ',' + cz)) return true;
+  }
+  return false;
+}
+
+// A player's interpolated position at a past time (lag compensation).
+function rewindPos(p, targetT) {
+  const h = p.history;
+  if (h.length === 0) return { x: p.x, z: p.z, h: p.height };
+  if (targetT >= h[h.length - 1].t) return h[h.length - 1];
+  if (targetT <= h[0].t) return h[0];
+  for (let i = h.length - 1; i > 0; i--) {
+    if (h[i - 1].t <= targetT && targetT <= h[i].t) {
+      const a = h[i - 1];
+      const b = h[i];
+      const f = (targetT - a.t) / ((b.t - a.t) || 1);
+      return { x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f, h: a.h };
+    }
+  }
+  return h[h.length - 1];
+}
+
+function killPlayer(room, victim, killer, headshot) {
+  victim.alive = false;
+  victim.hp = 0;
+  victim.deaths++;
+  if (killer && killer.id !== victim.id) killer.kills++;
+  broadcast(room, {
+    t: 'death',
+    killer: killer ? killer.id : null,
+    victim: victim.id,
+    killerName: killer ? killer.name : '',
+    victimName: victim.name,
+    headshot: !!headshot,
+  });
+  sendState(room);
+  const code = room.code;
+  setTimeout(() => {
+    const r = rooms.get(code);
+    if (!r || !r.players.has(victim.id)) return;
+    victim.hp = MAX_HP;
+    victim.alive = true;
+    victim.history.length = 0;
+    broadcast(r, { t: 'respawn', id: victim.id });
+    sendState(r);
+  }, RESPAWN_MS);
 }
 
 /** ====== HTTP (serves the built client when ../dist exists) ====== */
@@ -177,7 +285,7 @@ wss.on('connection', (ws) => {
       if (player) return;
       const name = (String(msg.name || '').trim() || 'Player').slice(0, 16);
       if (msg.t === 'create') {
-        room = { code: newRoomCode(), ops: [] };
+        room = { code: newRoomCode(), ops: [], open: new Set() };
         room.players = new Map();
         rooms.set(room.code, room);
       } else {
@@ -202,7 +310,14 @@ wss.on('connection', (ws) => {
         x: 0,
         z: 0,
         yaw: 0,
+        height: 1.8,
         playing: false,
+        hp: MAX_HP,
+        alive: true,
+        kills: 0,
+        deaths: 0,
+        history: [],
+        lastShotAt: 0,
       };
       room.players.set(id, player);
       send(ws, { t: 'joined', selfId: id, room: room.code, tileBudget: TILE_BUDGET });
@@ -227,6 +342,7 @@ wss.on('connection', (ws) => {
         return;
       }
       room.ops.push(op);
+      room.open = open;
       sendState(room);
       return;
     }
@@ -245,21 +361,35 @@ wss.on('connection', (ws) => {
         return;
       }
       const removed = room.ops.splice(idx, 1)[0];
-      if (!isConnected(recompute(room.ops).open)) {
+      const after = recompute(room.ops);
+      if (!isConnected(after.open)) {
         room.ops.splice(idx, 0, removed); // would split the map — keep it
         send(ws, { t: 'reject', reason: 'Undo would split the map' });
         return;
       }
+      room.open = after.open;
       sendState(room);
       return;
     }
 
     // --- presence ---
     if (msg.t === 'move') {
+      const wasPlaying = player.playing;
       player.x = Number.isFinite(msg.x) ? msg.x : 0;
       player.z = Number.isFinite(msg.z) ? msg.z : 0;
       player.yaw = Number.isFinite(msg.yaw) ? msg.yaw : 0;
+      player.height = Number.isFinite(msg.h) ? msg.h : 1.8;
       player.playing = !!msg.playing;
+      if (player.playing && !wasPlaying) {
+        player.hp = MAX_HP;
+        player.alive = true;
+        player.history.length = 0;
+      }
+      const now = Date.now();
+      player.history.push({ t: now, x: player.x, z: player.z, h: player.height });
+      while (player.history.length > 1 && player.history[0].t < now - HISTORY_MS) {
+        player.history.shift();
+      }
       broadcast(
         room,
         {
@@ -274,6 +404,47 @@ wss.on('connection', (ws) => {
         },
         player.id,
       );
+      return;
+    }
+
+    // --- shoot (server-authoritative hit validation) ---
+    if (msg.t === 'shoot') {
+      if (!player.alive || !player.playing) return;
+      const now = Date.now();
+      if (now - player.lastShotAt < SHOT_MIN_INTERVAL) return;
+      player.lastShotAt = now;
+      const o = { x: +msg.ox, y: +msg.oy, z: +msg.oz };
+      const d = { x: +msg.dx, y: +msg.dy, z: +msg.dz };
+      if (!Number.isFinite(o.x + o.y + o.z + d.x + d.y + d.z)) return;
+      const dl = Math.hypot(d.x, d.y, d.z) || 1;
+      d.x /= dl;
+      d.y /= dl;
+      d.z /= dl;
+      const rewindT = now - LAG_COMP_MS;
+      let best = null;
+      for (const b of room.players.values()) {
+        if (b.id === player.id || !b.alive || !b.playing) continue;
+        const pos = rewindPos(b, rewindT);
+        const t = rayAABB(
+          o, d,
+          pos.x - PLAYER_RADIUS, 0, pos.z - PLAYER_RADIUS,
+          pos.x + PLAYER_RADIUS, pos.h, pos.z + PLAYER_RADIUS,
+        );
+        if (t == null || t < 0 || t > SHOOT_RANGE) continue;
+        if (best && t >= best.t) continue;
+        if (losBlocked(room.open, o.x, o.z, pos.x, pos.z)) continue;
+        best = { b, t, headshot: o.y + d.y * t > pos.h * HEAD_FRAC };
+      }
+      if (best) {
+        best.b.hp -= best.headshot ? HEAD_DAMAGE : BODY_DAMAGE;
+        const killed = best.b.hp <= 0;
+        send(ws, { t: 'hitconfirm', headshot: best.headshot, killed });
+        if (killed) {
+          killPlayer(room, best.b, player, best.headshot);
+        } else {
+          send(best.b.ws, { t: 'damage', hp: best.b.hp, by: player.id });
+        }
+      }
       return;
     }
   });
