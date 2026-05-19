@@ -46,6 +46,7 @@ const ACTIONS = [
 export const settings = {
   valorantSens: 0.8,
   dpi: 400,
+  volume: 0.7,
   binds: { ...DEFAULT_BINDS },
   crosshair: { ...DEFAULT_CROSSHAIR },
 };
@@ -70,6 +71,7 @@ export function loadSettings() {
     const d = JSON.parse(raw);
     if (Number.isFinite(d.valorantSens) && d.valorantSens > 0) settings.valorantSens = d.valorantSens;
     if (Number.isFinite(d.dpi) && d.dpi > 0) settings.dpi = d.dpi;
+    if (Number.isFinite(d.volume) && d.volume >= 0 && d.volume <= 1) settings.volume = d.volume;
     if (d.binds) {
       for (const action of Object.keys(DEFAULT_BINDS)) {
         if (typeof d.binds[action] === 'string') settings.binds[action] = d.binds[action];
@@ -218,6 +220,14 @@ export function mountSettings({ onChange }) {
         </label>
       </section>
       <section>
+        <h3>Audio</h3>
+        <label class="settings-field">
+          <span>Volume</span>
+          <input id="set-vol" type="range" min="0" max="1" step="0.05" />
+        </label>
+        <p class="settings-note" id="set-vol-label"></p>
+      </section>
+      <section>
         <h3>Keybinds</h3>
         <div id="set-binds" class="bind-list"></div>
       </section>
@@ -232,6 +242,8 @@ export function mountSettings({ onChange }) {
   const sensInput = modal.querySelector('#set-sens');
   const dpiInput = modal.querySelector('#set-dpi');
   const cm360El = modal.querySelector('#set-cm360');
+  const volInput = modal.querySelector('#set-vol');
+  const volLabel = modal.querySelector('#set-vol-label');
   const bindList = modal.querySelector('#set-binds');
   const chColor = modal.querySelector('#ch-color');
   const chSize = modal.querySelector('#ch-size');
@@ -248,6 +260,10 @@ export function mountSettings({ onChange }) {
 
   function refreshCm360() {
     cm360El.textContent = `≈ ${cm360For(settings.valorantSens, settings.dpi).toFixed(1)} cm / 360°`;
+  }
+
+  function refreshVol() {
+    volLabel.textContent = settings.volume > 0 ? `${Math.round(settings.volume * 100)}%` : 'Muted';
   }
 
   let rebinding = false;
@@ -318,6 +334,15 @@ export function mountSettings({ onChange }) {
       refreshCm360();
     }
   });
+  volInput.addEventListener('input', () => {
+    const v = parseFloat(volInput.value);
+    if (Number.isFinite(v)) {
+      settings.volume = clamp(v, 0, 1);
+      saveSettings();
+      onChange();
+      refreshVol();
+    }
+  });
   for (const el of [chColor, chSize, chGap, chThick, chDot, chOutline]) {
     el.addEventListener('input', crosshairChanged);
     el.addEventListener('change', crosshairChanged);
@@ -325,6 +350,7 @@ export function mountSettings({ onChange }) {
   modal.querySelector('#set-reset').addEventListener('click', () => {
     settings.valorantSens = 0.8;
     settings.dpi = 400;
+    settings.volume = 0.7;
     settings.binds = { ...DEFAULT_BINDS };
     settings.crosshair = { ...DEFAULT_CROSSHAIR };
     saveSettings();
@@ -335,7 +361,9 @@ export function mountSettings({ onChange }) {
   function syncFields() {
     sensInput.value = settings.valorantSens;
     dpiInput.value = settings.dpi;
+    volInput.value = settings.volume;
     refreshCm360();
+    refreshVol();
     refreshBinds();
     const c = settings.crosshair;
     chColor.value = c.color;

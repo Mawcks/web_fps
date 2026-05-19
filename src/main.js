@@ -15,6 +15,7 @@ import { settings, loadSettings, pointerSpeedFor, mountSettings, applyCrosshairT
 import { Net } from './net.js';
 import { Avatars } from './avatars.js';
 import { Decals } from './decals.js';
+import { Sfx } from './audio.js';
 
 const EDIT_CAM_HEIGHT = 100;
 const TRANSITION_MS = 900;
@@ -22,7 +23,7 @@ const SAVE_KEY = 'web_fps_map_v1';
 
 let scene, renderer, container;
 let perspCam, orthoCam, activeCamera;
-let grid, editor, player, settingsUI, net, avatars, decals;
+let grid, editor, player, settingsUI, net, avatars, decals, audio;
 let gridHelper, editGroup;
 let playGroup = null;
 
@@ -86,6 +87,7 @@ function init() {
   player.torch.visible = false;
 
   net = new Net();
+  audio = new Sfx();
   avatars = new Avatars(scene);
   avatars.setVisible(false);
   decals = new Decals(scene);
@@ -110,6 +112,15 @@ function init() {
   setupNet();
   window.addEventListener('resize', onResize);
   setInterval(sendMove, 8); // ~125 Hz position updates, steady regardless of frame rate
+
+  // browsers block audio until a user gesture — start the context on the first
+  const unlockAudio = () => {
+    audio.unlock();
+    window.removeEventListener('pointerdown', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+  };
+  window.addEventListener('pointerdown', unlockAudio);
+  window.addEventListener('keydown', unlockAudio);
 
   player.controls.addEventListener('unlock', onPointerUnlock);
 
@@ -138,6 +149,7 @@ function applySettings() {
   player.binds = settings.binds;
   player.controls.pointerSpeed = pointerSpeedFor(settings.valorantSens);
   applyCrosshairTo(ui.crosshair, settings.crosshair);
+  audio.setVolume(settings.volume);
 }
 
 function cacheUi() {
@@ -361,6 +373,7 @@ function handleFiring() {
   const shot = player.shoot();
   if (!shot) return;
   muzzleFlash = 1;
+  audio.shoot();
   spawnTracer(shot.to);
   if (shot.impact) decals.add(shot.impact.point, shot.impact.normal);
   if (net.inRoom) net.shoot(shot.from, shot.dir);
@@ -430,6 +443,7 @@ function addKillfeed(m) {
 function onLocalDeath(m) {
   player.dead = true;
   firing = false;
+  audio.die();
   ui.deathOverlay.querySelector('.death-by').textContent =
     m.killer != null ? `Eliminated by ${m.killerName}` : 'Eliminated';
   ui.deathOverlay.classList.add('visible');
@@ -636,8 +650,12 @@ function setupNet() {
     myHp = m.hp;
     updateHpHud();
     flashDamage();
+    audio.hurt();
   });
-  net.on('hitconfirm', (m) => showHitmarker(m.headshot, m.killed));
+  net.on('hitconfirm', (m) => {
+    showHitmarker(m.headshot, m.killed);
+    audio.hit(m.headshot, m.killed);
+  });
   net.on('death', (m) => {
     addKillfeed(m);
     if (m.victim === net.selfId) onLocalDeath(m);
@@ -646,6 +664,25 @@ function setupNet() {
   net.on('respawn', (m) => {
     if (m.id === net.selfId) onLocalRespawn();
     else avatars.setAlive(m.id, true);
+  });
+  // another player's gunshot — placed in the stereo field by where they are
+  net.on('shot', (m) => {
+    if (m.id === net.selfId || mode !== 'play') return;
+    const a = avatars.map.get(m.id);
+    const sx = a ? a.x : m.x;
+    const sz = a ? a.z : m.z;
+    const dx = sx - player.feet.x;
+    const dz = sz - player.feet.z;
+    const dist = Math.hypot(dx, dz);
+    const gain = Math.min(1, 11 / (dist + 4)) * 0.85;
+    let pan = 0;
+    if (dist > 0.1) {
+      const fwd = new THREE.Vector3();
+      player.camera.getWorldDirection(fwd);
+      const fh = Math.hypot(fwd.x, fwd.z) || 1; // horizontal-only forward
+      pan = (-fwd.z * dx + fwd.x * dz) / (dist * fh);
+    }
+    audio.shoot({ pan, gain });
   });
 
   // --- match / rounds ---
@@ -663,6 +700,7 @@ function setupNet() {
     freezeTimer = setTimeout(() => { frozen = false; }, m.freezeMs || 2000);
     updateMatchUi();
     showBanner('Round ' + m.round, m.swapped ? 'Sides swapped' : '', Math.max(600, (m.freezeMs || 2000) - 300));
+    audio.roundStart();
   });
   net.on('roundover', (m) => {
     mpMatch.phase = 'roundover';
@@ -672,7 +710,9 @@ function setupNet() {
     clearTimeout(freezeTimer);
     addKillfeed({ killerName: m.winnerName, victimName: m.victimName, headshot: m.headshot });
     updateMatchUi();
-    showBanner(m.winnerId === net.selfId ? 'Round won' : 'Round lost', scoreLine(), 0);
+    const won = m.winnerId === net.selfId;
+    showBanner(won ? 'Round won' : 'Round lost', scoreLine(), 0);
+    audio.roundEnd(won);
   });
   net.on('matchover', (m) => {
     mpMatch.phase = 'matchover';
@@ -681,7 +721,9 @@ function setupNet() {
     firing = false;
     clearTimeout(freezeTimer);
     updateMatchUi();
-    showBanner(m.winnerId === net.selfId ? 'Victory' : 'Defeat', scoreLine(), 0);
+    const won = m.winnerId === net.selfId;
+    showBanner(won ? 'Victory' : 'Defeat', scoreLine(), 0);
+    audio.matchEnd(won);
   });
   net.on('lobby', () => {
     mpMatch = { phase: 'lobby', round: 0, scores: {} };
@@ -928,6 +970,7 @@ if (import.meta.env.DEV) {
     get net() { return net; },
     get avatars() { return avatars; },
     get decals() { return decals; },
+    get audio() { return audio; },
     get mpMatch() { return mpMatch; },
     get frozen() { return frozen; },
     enterPlay,

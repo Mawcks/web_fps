@@ -599,6 +599,8 @@ wss.on('connection', (ws) => {
       d.x /= dl;
       d.y /= dl;
       d.z /= dl;
+      // let everyone else hear the shot — placed by the shooter's position
+      broadcast(room, { t: 'shot', id: player.id, x: o.x, y: o.y, z: o.z }, player.id);
       // rewind targets to the exact moment the shooter was rendering — the
       // client sends its render time, clamped to the kept history window
       const rt = Number.isFinite(msg.rt) ? msg.rt : now - LAG_COMP_MS;
