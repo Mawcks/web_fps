@@ -105,7 +105,7 @@ function init() {
   bindInput();
   setupNet();
   window.addEventListener('resize', onResize);
-  setInterval(sendMove, 15); // ~66 Hz position updates, steady regardless of frame rate
+  setInterval(sendMove, 8); // ~125 Hz position updates, steady regardless of frame rate
 
   player.controls.addEventListener('unlock', onPointerUnlock);
 

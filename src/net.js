@@ -7,7 +7,8 @@
  * can tell the server exactly which past instant to validate against.
  */
 
-const INTERP_DELAY = 70; // ms — remote players are rendered this far behind server time
+const INTERP_DELAY = 50; // ms — remote players rendered this far back; raise it if a
+//                          jittery connection makes opponents stutter
 
 export class Net {
   constructor() {
