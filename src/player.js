@@ -29,12 +29,14 @@ const SPREAD_RECOVER = 9; // bloom decay rate once you stop firing
 
 // Recoil — a fixed CS/Valorant-style spray pattern: radians of upward view
 // kick per shot. Pure vertical for now, so it counters with a straight
-// pull-down. The spray index resets after a brief pause in firing.
+// pull-down. The pattern has a fixed length — once it is spent, holding the
+// trigger adds no further climb (no infinite recoil). It resets after a pause.
 const RECOIL_PATTERN = [
   0.009, 0.019, 0.029, 0.034, 0.036, 0.035, 0.033, 0.031, 0.029, 0.028,
 ];
 const SPRAY_RESET = 0.3; // seconds without firing before the pattern resets
 const CONVERGE_DIST = 18; // gun barrel toes in to meet the aim ray at this range
+const MAX_PITCH = Math.PI / 2 - 0.05; // pitch ceiling — recoil can never flip the camera
 
 // Movement — a Quake/Source friction + acceleration model. Friction gives a
 // quick sliding stop; pressing the opposite key (counter-strafe) reverses the
@@ -343,10 +345,13 @@ export class Player {
     this._gunRecoil = 1;
 
     // recoil — advance the spray pattern (resets after a pause), kick the view
+    // up. Past the end of the pattern the kick is 0, and the pitch is clamped,
+    // so a held trigger can never run recoil away or tip the camera past vertical.
     if (this._timeSinceShot > SPRAY_RESET) this._recoilIndex = 0;
-    else this._recoilIndex = Math.min(this._recoilIndex + 1, RECOIL_PATTERN.length - 1);
+    else this._recoilIndex = Math.min(this._recoilIndex + 1, RECOIL_PATTERN.length);
     this._timeSinceShot = 0;
-    this.camera.rotation.x += RECOIL_PATTERN[this._recoilIndex];
+    const kick = RECOIL_PATTERN[this._recoilIndex] || 0;
+    this.camera.rotation.x = Math.min(MAX_PITCH, this.camera.rotation.x + kick);
 
     // shot goes where the (kicked) view points, nudged inside the spread cone
     const from = this.camera.position.clone();
