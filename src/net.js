@@ -111,7 +111,15 @@ export class Net {
     this._send({ t: 'undo' });
   }
 
-  move(x, z, yaw, playing) {
-    this._send({ t: 'move', x, z, yaw, playing });
+  move(x, z, yaw, h, playing) {
+    this._send({ t: 'move', x, z, yaw, h, playing });
+  }
+
+  shoot(from, dir) {
+    this._send({
+      t: 'shoot',
+      ox: from.x, oy: from.y, oz: from.z,
+      dx: dir.x, dy: dir.y, dz: dir.z,
+    });
   }
 }

@@ -67,13 +67,22 @@ export class Avatars {
       const figure = this._buildFigure(data.color || '#cccccc');
       figure.add(this._buildNameTag(data.name || 'Player', data.color || '#cccccc'));
       this.group.add(figure);
-      a = { figure, x: data.x || 0, z: data.z || 0, yaw: data.yaw || 0 };
+      a = { figure, x: data.x || 0, z: data.z || 0, yaw: data.yaw || 0, alive: true };
       this.map.set(id, a);
     }
     a.tx = data.x;
     a.tz = data.z;
     a.tyaw = data.yaw;
-    a.figure.visible = !!data.playing;
+    a.playing = !!data.playing;
+    a.figure.visible = a.playing && a.alive;
+  }
+
+  /** Show/hide an avatar by alive state — a dead player's figure is hidden. */
+  setAlive(id, alive) {
+    const a = this.map.get(id);
+    if (!a) return;
+    a.alive = alive;
+    a.figure.visible = a.playing && a.alive;
   }
 
   remove(id) {

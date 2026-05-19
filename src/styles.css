@@ -454,3 +454,130 @@ body.playing #crosshair {
   width: 64px;
   text-align: right;
 }
+
+/* ===== Combat UI ===== */
+#hpHud {
+  display: none;
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  font-size: 2.4rem;
+  font-weight: 800;
+  color: #eef2f6;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+#hpHud::before {
+  content: '\2665  ';
+  font-size: 1.3rem;
+  vertical-align: 0.18em;
+  color: #ff5a4e;
+}
+#hpHud.low {
+  color: #ff5a4e;
+}
+body.playing.inroom #hpHud {
+  display: block;
+}
+
+#damageFlash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 38%, rgba(190, 22, 22, 0.62) 100%);
+}
+#damageFlash.hit {
+  animation: dmgflash 0.42s ease-out;
+}
+@keyframes dmgflash {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+#hitmarker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  pointer-events: none;
+  opacity: 0;
+}
+#hitmarker::before,
+#hitmarker::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 13px;
+  height: 2.5px;
+  background: #f2f5f8;
+}
+#hitmarker::before { transform: translate(-50%, -50%) rotate(45deg); }
+#hitmarker::after { transform: translate(-50%, -50%) rotate(-45deg); }
+#hitmarker.kill::before,
+#hitmarker.kill::after {
+  background: #ff5a36;
+  height: 3.5px;
+}
+#hitmarker.show {
+  animation: hitpop 0.18s ease-out;
+}
+@keyframes hitpop {
+  0% { opacity: 1; transform: scale(1.55); }
+  100% { opacity: 0; transform: scale(1); }
+}
+
+#killfeed {
+  display: none;
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  pointer-events: none;
+}
+body.inroom #killfeed {
+  display: flex;
+}
+.kf-row {
+  background: rgba(13, 14, 18, 0.82);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.84rem;
+}
+.kf-arrow,
+.kf-victim {
+  color: var(--muted);
+}
+
+#deathOverlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  background: rgba(42, 6, 6, 0.45);
+  pointer-events: none;
+}
+#deathOverlay.visible {
+  display: flex;
+}
+.death-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+.death-card strong {
+  font-size: 1.7rem;
+  color: #ff6a5a;
+}
+.death-card span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}

@@ -67,6 +67,7 @@ export class Player {
     this.onGround = true;
     this.height = STAND_HEIGHT;
     this.enabled = false;
+    this.dead = false;
     this.colliders = []; // THREE.Box3[] — movement collision
     this.hitMeshes = []; // meshes the hitscan ray can hit (walls/floor/ceiling)
 
@@ -150,6 +151,7 @@ export class Player {
     this.velY = 0;
     this.onGround = true;
     this.height = STAND_HEIGHT;
+    this.dead = false;
     this.spread = 0;
     this._recoilIndex = 0;
     this._timeSinceShot = 999;
@@ -334,13 +336,14 @@ export class Player {
     this._raycaster.set(from, dir);
     this._raycaster.far = SHOOT_RANGE;
     const hits = this._raycaster.intersectObjects(this.hitMeshes, false);
+    const ray = { from: from.clone(), dir: dir.clone() }; // for the server hit check
     if (hits.length) {
       const h = hits[0];
       const normal = h.face
         ? h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize()
         : new THREE.Vector3(0, 1, 0);
-      return { to: h.point.clone(), impact: { point: h.point.clone(), normal } };
+      return { ...ray, to: h.point.clone(), impact: { point: h.point.clone(), normal } };
     }
-    return { to: from.addScaledVector(dir, SHOOT_RANGE), impact: null };
+    return { ...ray, to: from.addScaledVector(dir, SHOOT_RANGE), impact: null };
   }
 }

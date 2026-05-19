@@ -32,6 +32,8 @@ let playFog; // applied only in play mode — would hide the top-down editor
 const tracers = [];
 let muzzleFlash = 0;
 let firing = false;
+let myHp = 100;
+let hitmarkerTimer = null;
 
 const keys = new Set();
 const editView = { cx: 0, cz: 0, halfW: 24, halfD: 24, zoom: 1 };
@@ -141,6 +143,7 @@ function cacheUi() {
     'crosshair', 'settingsBtn', 'mpBtn', 'mpPanel', 'mpModal', 'mpCloseBtn',
     'mpJoinView', 'mpRoomView', 'mpName', 'mpServer', 'mpCreateBtn', 'mpCode',
     'mpJoinBtn', 'mpError', 'mpRoomCode', 'mpCopyBtn', 'mpLeaveBtn',
+    'hpHud', 'damageFlash', 'hitmarker', 'killfeed', 'deathOverlay',
   ]) {
     ui[id] = document.getElementById(id);
   }
@@ -293,6 +296,10 @@ function enterPlay() {
   player.gun.visible = true;
   player.torch.visible = true;
   document.body.classList.add('playing');
+  myHp = 100;
+  player.dead = false;
+  updateHpHud();
+  ui.deathOverlay.classList.remove('visible');
 
   // swoop the camera down from the top-down view into the player's eyes
   const downQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0, 'YXZ'));
@@ -327,6 +334,7 @@ function enterEdit() {
   editor.setEnabled(true);
   document.body.classList.remove('playing');
   ui.lockOverlay.classList.remove('visible');
+  ui.deathOverlay.classList.remove('visible');
 
   activeCamera = orthoCam;
   fitEditCamera();
@@ -343,12 +351,13 @@ function onPointerUnlock() {
 
 /** ====== Shooting ====== */
 function handleFiring() {
-  if (!firing || !player.isLocked) return;
+  if (!firing || !player.isLocked || player.dead) return;
   const shot = player.shoot();
   if (!shot) return;
   muzzleFlash = 1;
   spawnTracer(shot.to);
   if (shot.impact) decals.add(shot.impact.point, shot.impact.normal);
+  if (net.inRoom) net.shoot(shot.from, shot.dir);
 }
 
 function spawnTracer(to) {
@@ -379,6 +388,76 @@ function updateTracers(dt) {
       tr.line.material.opacity = tr.life / tr.max;
     }
   }
+}
+
+/** ====== Combat ====== */
+function updateHpHud() {
+  ui.hpHud.textContent = Math.max(0, Math.round(myHp));
+  ui.hpHud.classList.toggle('low', myHp <= 30);
+}
+
+function flashDamage() {
+  ui.damageFlash.classList.remove('hit');
+  void ui.damageFlash.offsetWidth; // restart the CSS animation
+  ui.damageFlash.classList.add('hit');
+}
+
+function showHitmarker(headshot, killed) {
+  const m = ui.hitmarker;
+  m.classList.remove('show', 'kill');
+  void m.offsetWidth;
+  if (headshot || killed) m.classList.add('kill');
+  m.classList.add('show');
+  clearTimeout(hitmarkerTimer);
+  hitmarkerTimer = setTimeout(() => m.classList.remove('show', 'kill'), 200);
+}
+
+function addKillfeed(m) {
+  const row = document.createElement('div');
+  row.className = 'kf-row';
+  row.textContent = `${m.killerName || '—'}  ▸  ${m.victimName}${m.headshot ? '  (HS)' : ''}`;
+  ui.killfeed.prepend(row);
+  while (ui.killfeed.children.length > 5) ui.killfeed.lastChild.remove();
+  setTimeout(() => row.remove(), 4500);
+}
+
+function onLocalDeath(m) {
+  player.dead = true;
+  firing = false;
+  ui.deathOverlay.querySelector('.death-by').textContent =
+    m.killer != null ? `Eliminated by ${m.killerName}` : 'Eliminated';
+  ui.deathOverlay.classList.add('visible');
+}
+
+function onLocalRespawn() {
+  player.dead = false;
+  myHp = 100;
+  updateHpHud();
+  ui.deathOverlay.classList.remove('visible');
+  const spawn = pickRespawnPoint();
+  player.spawnAt(spawn.x, spawn.z, 0);
+}
+
+/** An open cell as far as possible from the other players. */
+function pickRespawnPoint() {
+  const candidates = grid.randomOpenPoints(14);
+  if (candidates.length === 0) return grid.spawnPoint();
+  const others = [...avatars.map.values()];
+  if (others.length === 0) return candidates[0];
+  let best = candidates[0];
+  let bestDist = -1;
+  for (const c of candidates) {
+    let nearest = Infinity;
+    for (const e of others) {
+      const d = (c.x - e.x) ** 2 + (c.z - e.z) ** 2;
+      if (d < nearest) nearest = d;
+    }
+    if (nearest > bestDist) {
+      bestDist = nearest;
+      best = c;
+    }
+  }
+  return best;
 }
 
 /** ====== Save / load ====== */
@@ -470,6 +549,7 @@ function setupNet() {
   net.on('joined', () => {
     mpFirstState = true;
     avatars.clear();
+    document.body.classList.add('inroom');
     showMpRoomView();
   });
   net.on('state', (m) => {
@@ -477,6 +557,7 @@ function setupNet() {
     onGridChanged();
     if (mode === 'play') rebuildPlayWorld();
     renderRoster(m.players);
+    for (const p of m.players) avatars.setAlive(p.id, p.alive !== false);
     if (mpFirstState) {
       mpFirstState = false;
       fitEditCamera();
@@ -494,6 +575,23 @@ function setupNet() {
     if (m.wasInRoom) flash('Disconnected from the room');
   });
   net.on('neterror', (m) => mpError((m && m.reason) || 'Connection error'));
+
+  // --- combat ---
+  net.on('damage', (m) => {
+    myHp = m.hp;
+    updateHpHud();
+    flashDamage();
+  });
+  net.on('hitconfirm', (m) => showHitmarker(m.headshot, m.killed));
+  net.on('death', (m) => {
+    addKillfeed(m);
+    if (m.victim === net.selfId) onLocalDeath(m);
+    else avatars.setAlive(m.victim, false);
+  });
+  net.on('respawn', (m) => {
+    if (m.id === net.selfId) onLocalRespawn();
+    else avatars.setAlive(m.id, true);
+  });
 }
 
 function bindMpUi() {
@@ -553,6 +651,7 @@ function showMpRoomView() {
 }
 
 function resetMpUi() {
+  document.body.classList.remove('inroom');
   avatars.clear();
   ui.mpPanel.hidden = true;
   showMpJoinView();
@@ -695,20 +794,23 @@ function animate() {
   if (transition) {
     updateTransition();
   } else if (mode === 'play') {
-    player.enabled = player.isLocked;
+    player.enabled = player.isLocked && !player.dead;
     handleFiring();
     player.update(dt, keys);
     updateTracers(dt);
-    ui.lockOverlay.classList.toggle('visible', !player.isLocked);
+    ui.lockOverlay.classList.toggle('visible', !player.isLocked && !player.dead);
   } else {
     player.update(dt, keys); // keeps the gun viewmodel settled
   }
 
   if (net.inRoom) {
     avatars.update(dt);
-    if (now - lastMoveSent > 80) {
+    if (now - lastMoveSent > 60) {
       lastMoveSent = now;
-      net.move(player.feet.x, player.feet.z, player.camera.rotation.y, mode === 'play' && !transition);
+      net.move(
+        player.feet.x, player.feet.z, player.camera.rotation.y,
+        player.height, mode === 'play' && !transition,
+      );
     }
   }
 
