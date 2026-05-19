@@ -34,6 +34,13 @@ const LAG_COMP_MS = 100; // fallback rewind when a shot carries no render time
 const HISTORY_MS = 1000; // position history kept per player
 const SHOT_MIN_INTERVAL = 85; // server-side fire-rate guard (ms)
 
+// Match (1v1 rounds) — all overridable via env vars
+const ROUND_WINS = Number(process.env.ROUND_WINS) || 5; // round wins to take the match
+const ROUNDS_TO_SWAP = Number(process.env.ROUNDS_TO_SWAP) || 4; // rounds before the side swap
+const FREEZE_MS = Number(process.env.FREEZE_MS) || 2500; // frozen at the start of each round
+const ROUND_END_MS = Number(process.env.ROUND_END_MS) || 3500; // gap between rounds
+const MATCH_END_MS = Number(process.env.MATCH_END_MS) || 6500; // gap before returning to lobby
+
 /** ====== Carve model (open-cell replay, ownership, connectivity) ====== */
 
 // Replay ops into an open-cell set, tracking which player opened each cell.
@@ -136,7 +143,12 @@ function roster(room) {
 }
 
 function sendState(room) {
-  broadcast(room, { t: 'state', ops: room.ops, players: roster(room) });
+  broadcast(room, {
+    t: 'state',
+    ops: room.ops,
+    players: roster(room),
+    match: matchSummary(room),
+  });
 }
 
 /** ====== Combat ====== */
@@ -223,13 +235,152 @@ function killPlayer(room, victim, killer, headshot) {
   const code = room.code;
   setTimeout(() => {
     const r = rooms.get(code);
-    if (!r || !r.players.has(victim.id)) return;
+    if (!r || !r.players.has(victim.id) || r.match.phase !== 'lobby') return;
     victim.hp = MAX_HP;
     victim.alive = true;
     victim.history.length = 0;
     broadcast(r, { t: 'respawn', id: victim.id });
     sendState(r);
   }, RESPAWN_MS);
+}
+
+/** ====== Match (1v1 rounds) ====== */
+
+function lobbyMatch() {
+  return { phase: 'lobby', round: 0, scores: {}, p: [], swapped: false, liveAt: 0 };
+}
+
+function matchSummary(room) {
+  const m = room.match;
+  return { phase: m.phase, round: m.round, scores: m.scores };
+}
+
+// The two open cells farthest apart — round spawn points (double-BFS diameter).
+function farthestSpawns(open) {
+  if (open.size === 0) return [{ x: 0.5, z: 0.5 }, { x: 0.5, z: 0.5 }];
+  const bfsFar = (startKey) => {
+    const seen = new Map([[startKey, 0]]);
+    const queue = [startKey];
+    let far = startKey;
+    let farD = 0;
+    for (let i = 0; i < queue.length; i++) {
+      const k = queue[i];
+      const d = seen.get(k);
+      if (d > farD) {
+        farD = d;
+        far = k;
+      }
+      const c = k.indexOf(',');
+      const x = +k.slice(0, c);
+      const z = +k.slice(c + 1);
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nk = x + dx + ',' + (z + dz);
+        if (open.has(nk) && !seen.has(nk)) {
+          seen.set(nk, d + 1);
+          queue.push(nk);
+        }
+      }
+    }
+    return far;
+  };
+  const a = bfsFar(bfsFar(open.values().next().value));
+  const b = bfsFar(a);
+  const toPoint = (k) => {
+    const c = k.indexOf(',');
+    return { x: +k.slice(0, c) + 0.5, z: +k.slice(c + 1) + 0.5 };
+  };
+  return [toPoint(a), toPoint(b)];
+}
+
+function startRound(room) {
+  const m = room.match;
+  m.round++;
+  if (!m.swapped && (m.scores[m.p[0]] || 0) + (m.scores[m.p[1]] || 0) >= ROUNDS_TO_SWAP) {
+    m.swapped = true;
+  }
+  const spawns = farthestSpawns(room.open);
+  const assign = {};
+  assign[m.p[0]] = spawns[m.swapped ? 1 : 0];
+  assign[m.p[1]] = spawns[m.swapped ? 0 : 1];
+  m.phase = 'live';
+  m.liveAt = Date.now() + FREEZE_MS;
+  for (const id of m.p) {
+    const pl = room.players.get(id);
+    if (pl) {
+      pl.hp = MAX_HP;
+      pl.alive = true;
+      pl.history.length = 0;
+    }
+  }
+  broadcast(room, {
+    t: 'roundstart',
+    round: m.round,
+    freezeMs: FREEZE_MS,
+    scores: m.scores,
+    swapped: m.swapped,
+    spawns: assign,
+  });
+  sendState(room);
+}
+
+function endRound(room, victim, killer, headshot) {
+  const m = room.match;
+  victim.alive = false;
+  victim.hp = 0;
+  m.scores[killer.id] = (m.scores[killer.id] || 0) + 1;
+  m.phase = 'roundover';
+  broadcast(room, {
+    t: 'roundover',
+    winnerId: killer.id,
+    winnerName: killer.name,
+    victimId: victim.id,
+    victimName: victim.name,
+    headshot: !!headshot,
+    scores: m.scores,
+    round: m.round,
+  });
+  sendState(room);
+  const code = room.code;
+  setTimeout(() => {
+    const r = rooms.get(code);
+    if (!r || r.match.phase !== 'roundover') return;
+    if (r.players.size < 2 || !r.match.p.every((id) => r.players.has(id))) {
+      resetToLobby(r);
+      return;
+    }
+    const top = Math.max(r.match.scores[r.match.p[0]] || 0, r.match.scores[r.match.p[1]] || 0);
+    if (top >= ROUND_WINS) endMatch(r);
+    else startRound(r);
+  }, ROUND_END_MS);
+}
+
+function endMatch(room) {
+  const m = room.match;
+  m.phase = 'matchover';
+  const winnerId = (m.scores[m.p[0]] || 0) >= (m.scores[m.p[1]] || 0) ? m.p[0] : m.p[1];
+  const winner = room.players.get(winnerId);
+  broadcast(room, {
+    t: 'matchover',
+    winnerId,
+    winnerName: winner ? winner.name : '',
+    scores: m.scores,
+  });
+  sendState(room);
+  const code = room.code;
+  setTimeout(() => {
+    const r = rooms.get(code);
+    if (r) resetToLobby(r);
+  }, MATCH_END_MS);
+}
+
+function resetToLobby(room) {
+  room.match = lobbyMatch();
+  for (const p of room.players.values()) {
+    p.hp = MAX_HP;
+    p.alive = true;
+  }
+  broadcast(room, { t: 'lobby' });
+  sendState(room);
 }
 
 /** ====== HTTP (serves the built client when ../dist exists) ====== */
@@ -285,7 +436,7 @@ wss.on('connection', (ws) => {
       if (player) return;
       const name = (String(msg.name || '').trim() || 'Player').slice(0, 16);
       if (msg.t === 'create') {
-        room = { code: newRoomCode(), ops: [], open: new Set() };
+        room = { code: newRoomCode(), ops: [], open: new Set(), match: lobbyMatch() };
         room.players = new Map();
         rooms.set(room.code, room);
       } else {
@@ -372,6 +523,30 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // --- start a 1v1 match ---
+    if (msg.t === 'startmatch') {
+      if (room.match.phase !== 'lobby') return;
+      if (room.players.size !== 2) {
+        send(ws, { t: 'reject', reason: '1v1 needs exactly two players in the room' });
+        return;
+      }
+      if (room.open.size < 20) {
+        send(ws, { t: 'reject', reason: 'Carve an arena before starting' });
+        return;
+      }
+      const ids = [...room.players.keys()];
+      room.match = {
+        phase: 'lobby',
+        round: 0,
+        scores: { [ids[0]]: 0, [ids[1]]: 0 },
+        p: ids,
+        swapped: false,
+        liveAt: 0,
+      };
+      startRound(room);
+      return;
+    }
+
     // --- presence ---
     if (msg.t === 'move') {
       const wasPlaying = player.playing;
@@ -411,7 +586,10 @@ wss.on('connection', (ws) => {
     // --- shoot (server-authoritative hit validation) ---
     if (msg.t === 'shoot') {
       if (!player.alive || !player.playing) return;
+      const m = room.match;
+      if (m.phase === 'roundover' || m.phase === 'matchover') return;
       const now = Date.now();
+      if (m.phase === 'live' && (now < m.liveAt || !m.p.includes(player.id))) return;
       if (now - player.lastShotAt < SHOT_MIN_INTERVAL) return;
       player.lastShotAt = now;
       const o = { x: +msg.ox, y: +msg.oy, z: +msg.oz };
@@ -428,6 +606,7 @@ wss.on('connection', (ws) => {
       let best = null;
       for (const b of room.players.values()) {
         if (b.id === player.id || !b.alive || !b.playing) continue;
+        if (m.phase === 'live' && !m.p.includes(b.id)) continue; // only match players are targets
         const pos = rewindPos(b, rewindT);
         const t = rayAABB(
           o, d,
@@ -444,7 +623,8 @@ wss.on('connection', (ws) => {
         const killed = best.b.hp <= 0;
         send(ws, { t: 'hitconfirm', headshot: best.headshot, killed });
         if (killed) {
-          killPlayer(room, best.b, player, best.headshot);
+          if (m.phase === 'live') endRound(room, best.b, player, best.headshot);
+          else killPlayer(room, best.b, player, best.headshot);
         } else {
           send(best.b.ws, { t: 'damage', hp: best.b.hp, by: player.id });
         }
@@ -458,8 +638,12 @@ wss.on('connection', (ws) => {
     room.players.delete(player.id);
     if (room.players.size === 0) {
       rooms.delete(room.code);
+      return;
+    }
+    broadcast(room, { t: 'left', id: player.id });
+    if (room.match.phase !== 'lobby' && room.match.p.includes(player.id)) {
+      resetToLobby(room); // a participant left — abort the match
     } else {
-      broadcast(room, { t: 'left', id: player.id });
       sendState(room);
     }
   });
