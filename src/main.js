@@ -34,6 +34,10 @@ let muzzleFlash = 0;
 let firing = false;
 let myHp = 100;
 let hitmarkerTimer = null;
+let mpMatch = { phase: 'lobby', round: 0, scores: {} };
+let frozen = false; // round-start freeze / between-round lock
+let freezeTimer = null;
+let bannerTimer = null;
 
 const keys = new Set();
 const editView = { cx: 0, cz: 0, halfW: 24, halfD: 24, zoom: 1 };
@@ -144,6 +148,7 @@ function cacheUi() {
     'mpJoinView', 'mpRoomView', 'mpName', 'mpServer', 'mpCreateBtn', 'mpCode',
     'mpJoinBtn', 'mpError', 'mpRoomCode', 'mpCopyBtn', 'mpLeaveBtn',
     'hpHud', 'damageFlash', 'hitmarker', 'killfeed', 'deathOverlay',
+    'matchBanner', 'mpStartBtn',
   ]) {
     ui[id] = document.getElementById(id);
   }
@@ -211,7 +216,7 @@ function bindInput() {
     }
     keys.add(e.code);
 
-    if (e.code === 'KeyP' && !transition) toggleMode();
+    if (e.code === 'KeyP' && !transition && mpMatch.phase === 'lobby') toggleMode();
     if (mode === 'edit') {
       if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
@@ -273,7 +278,7 @@ function setTool(tool) {
   ui.toolBtn.classList.toggle('erase', tool === 'erase');
 }
 
-function enterPlay() {
+function enterPlay(spawnOverride) {
   if (grid.isEmpty) {
     flash('Carve a room first');
     return;
@@ -281,7 +286,7 @@ function enterPlay() {
 
   rebuildPlayWorld();
 
-  const spawn = grid.spawnPoint();
+  const spawn = spawnOverride || grid.spawnPoint();
   player.spawnAt(spawn.x, spawn.z, 0);
 
   mode = 'play';
@@ -320,6 +325,7 @@ function enterEdit() {
   mode = 'edit';
   transition = null;
   firing = false;
+  frozen = false;
   scene.fog = null;
   player.enabled = false;
   player.unlock();
@@ -351,7 +357,7 @@ function onPointerUnlock() {
 
 /** ====== Shooting ====== */
 function handleFiring() {
-  if (!firing || !player.isLocked || player.dead) return;
+  if (!firing || !player.isLocked || player.dead || frozen) return;
   const shot = player.shoot();
   if (!shot) return;
   muzzleFlash = 1;
@@ -517,13 +523,49 @@ function defaultServerUrl() {
   return `${proto}//${location.host}`;
 }
 
-/** Send the local player's position to the server (~66 Hz, via setInterval). */
+/** Send the local player's position to the server (~125 Hz, via setInterval). */
 function sendMove() {
   if (!net.inRoom) return;
+  // During a live round the player is a combatant even mid-transition (the
+  // round-start camera swoop) — report `playing` so the server keeps them a
+  // valid target the instant the freeze lifts, regardless of freeze length.
+  const playing = (mode === 'play' && !transition) || mpMatch.phase === 'live';
   net.move(
     player.feet.x, player.feet.z, player.camera.rotation.y,
-    player.height, mode === 'play' && !transition,
+    player.height, playing,
   );
+}
+
+/** "You 2 — 1 Opponent" from the current match scores. */
+function scoreLine() {
+  const scores = mpMatch.scores || {};
+  const me = scores[net.selfId] || 0;
+  let them = 0;
+  for (const [id, v] of Object.entries(scores)) {
+    if (Number(id) !== net.selfId) them = v;
+  }
+  return `You ${me} — ${them} Opponent`;
+}
+
+/** Show/hide the score panel and the Start-match button for the match phase. */
+function updateMatchUi() {
+  const inMatch = net.inRoom && mpMatch.phase !== 'lobby';
+  ui.scorePanel.classList.toggle('visible', inMatch);
+  if (inMatch) ui.scorePanel.textContent = `Round ${mpMatch.round}  ·  ${scoreLine()}`;
+  ui.mpStartBtn.hidden = !net.inRoom || mpMatch.phase !== 'lobby';
+}
+
+function showBanner(big, sub, ms) {
+  ui.matchBanner.querySelector('strong').textContent = big;
+  ui.matchBanner.querySelector('span').textContent = sub || '';
+  ui.matchBanner.classList.add('show');
+  clearTimeout(bannerTimer);
+  if (ms > 0) bannerTimer = setTimeout(() => ui.matchBanner.classList.remove('show'), ms);
+}
+
+function hideBanner() {
+  clearTimeout(bannerTimer);
+  ui.matchBanner.classList.remove('show');
 }
 
 function handleCarveIntent(type, x, z, w, d) {
@@ -567,6 +609,10 @@ function setupNet() {
     if (mode === 'play') rebuildPlayWorld();
     renderRoster(m.players);
     for (const p of m.players) avatars.setAlive(p.id, p.alive !== false);
+    if (m.match) {
+      mpMatch = { phase: m.match.phase, round: m.match.round, scores: m.match.scores || {} };
+      updateMatchUi();
+    }
     if (mpFirstState) {
       mpFirstState = false;
       fitEditCamera();
@@ -601,6 +647,50 @@ function setupNet() {
     if (m.id === net.selfId) onLocalRespawn();
     else avatars.setAlive(m.id, true);
   });
+
+  // --- match / rounds ---
+  net.on('roundstart', (m) => {
+    mpMatch = { phase: 'live', round: m.round, scores: m.scores || {} };
+    const spawn = m.spawns && m.spawns[net.selfId];
+    if (mode === 'edit') enterPlay(spawn);
+    else if (spawn) player.spawnAt(spawn.x, spawn.z, 0);
+    myHp = 100;
+    player.dead = false;
+    updateHpHud();
+    ui.deathOverlay.classList.remove('visible');
+    frozen = true;
+    clearTimeout(freezeTimer);
+    freezeTimer = setTimeout(() => { frozen = false; }, m.freezeMs || 2000);
+    updateMatchUi();
+    showBanner('Round ' + m.round, m.swapped ? 'Sides swapped' : '', Math.max(600, (m.freezeMs || 2000) - 300));
+  });
+  net.on('roundover', (m) => {
+    mpMatch.phase = 'roundover';
+    mpMatch.scores = m.scores || mpMatch.scores;
+    frozen = true;
+    firing = false;
+    clearTimeout(freezeTimer);
+    addKillfeed({ killerName: m.winnerName, victimName: m.victimName, headshot: m.headshot });
+    updateMatchUi();
+    showBanner(m.winnerId === net.selfId ? 'Round won' : 'Round lost', scoreLine(), 0);
+  });
+  net.on('matchover', (m) => {
+    mpMatch.phase = 'matchover';
+    mpMatch.scores = m.scores || mpMatch.scores;
+    frozen = true;
+    firing = false;
+    clearTimeout(freezeTimer);
+    updateMatchUi();
+    showBanner(m.winnerId === net.selfId ? 'Victory' : 'Defeat', scoreLine(), 0);
+  });
+  net.on('lobby', () => {
+    mpMatch = { phase: 'lobby', round: 0, scores: {} };
+    frozen = false;
+    clearTimeout(freezeTimer);
+    hideBanner();
+    updateMatchUi();
+    flash('Match over — back in the lobby');
+  });
 }
 
 function bindMpUi() {
@@ -622,6 +712,7 @@ function bindMpUi() {
     flash('Left the room');
   });
   ui.mpCopyBtn.addEventListener('click', copyInviteLink);
+  ui.mpStartBtn.addEventListener('click', () => net.startMatch());
 }
 
 function connectToRoom(create) {
@@ -657,12 +748,17 @@ function showMpRoomView() {
   ui.mpJoinView.hidden = true;
   ui.mpRoomView.hidden = false;
   ui.mpRoomCode.textContent = net.room || '----';
+  updateMatchUi();
 }
 
 function resetMpUi() {
   document.body.classList.remove('inroom');
   avatars.clear();
   ui.mpPanel.hidden = true;
+  mpMatch = { phase: 'lobby', round: 0, scores: {} };
+  frozen = false;
+  hideBanner();
+  updateMatchUi();
   showMpJoinView();
 }
 
@@ -803,7 +899,7 @@ function animate() {
   if (transition) {
     updateTransition();
   } else if (mode === 'play') {
-    player.enabled = player.isLocked && !player.dead;
+    player.enabled = player.isLocked && !player.dead && !frozen;
     handleFiring();
     player.update(dt, keys);
     updateTracers(dt);
@@ -832,6 +928,8 @@ if (import.meta.env.DEV) {
     get net() { return net; },
     get avatars() { return avatars; },
     get decals() { return decals; },
+    get mpMatch() { return mpMatch; },
+    get frozen() { return frozen; },
     enterPlay,
     enterEdit,
   };

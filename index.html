@@ -49,6 +49,7 @@
         <span>Respawning&hellip;</span>
       </div>
     </div>
+    <div id="matchBanner"><strong></strong><span></span></div>
   </div>
 
   <p id="hud" class="hud"></p>
@@ -93,9 +94,16 @@
       <section>
         <p class="settings-note">You're in room</p>
         <div class="mp-roomcode" id="mpRoomCode">----</div>
+        <button id="mpCopyBtn" class="mp-wide" type="button">Copy invite link</button>
       </section>
       <section>
-        <button id="mpCopyBtn" class="primary mp-wide" type="button">Copy invite link</button>
+        <button id="mpStartBtn" class="primary mp-wide" type="button">Start 1v1 match</button>
+        <p class="settings-note">
+          First to 5 rounds; a round is won by the last player standing. Both
+          players must be in the room and an arena carved.
+        </p>
+      </section>
+      <section>
         <button id="mpLeaveBtn" class="mp-wide" type="button">Leave room</button>
       </section>
     </div>

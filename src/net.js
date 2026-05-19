@@ -146,4 +146,8 @@ export class Net {
       rt: this.renderTime, // the instant we were rendering — server rewinds to here
     });
   }
+
+  startMatch() {
+    this._send({ t: 'startmatch' });
+  }
 }

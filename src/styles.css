@@ -581,3 +581,32 @@ body.inroom #killfeed {
   color: var(--muted);
   font-size: 0.9rem;
 }
+
+#matchBanner {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: 36%;
+  transform: translate(-50%, -50%);
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  pointer-events: none;
+  text-align: center;
+}
+#matchBanner.show {
+  display: flex;
+}
+#matchBanner strong {
+  font-size: 2.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #eef2f6;
+  text-shadow: 0 3px 14px rgba(0, 0, 0, 0.95);
+}
+#matchBanner span {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--accent-hi);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.95);
+}
