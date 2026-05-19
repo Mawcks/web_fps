@@ -1,10 +1,11 @@
 /**
  * First-person controller.
  *
- * Movement uses accel/decel toward a target velocity. Collision treats walls
- * as 2D rectangles in the XZ plane plus a floor/ceiling clamp. Shooting is
- * hitscan with a spread cone (wider while moving or airborne) and a fixed
- * recoil spray pattern that climbs the view.
+ * Movement is a Quake/Source-style friction + acceleration model: friction
+ * gives a quick sliding stop, counter-strafing reverses you almost instantly,
+ * and a low air-accel cap allows air-strafing. Collision treats walls as 2D
+ * rectangles in the XZ plane plus a floor/ceiling clamp. Shooting is hitscan
+ * with a movement-scaled spread cone and a fixed recoil spray pattern.
  */
 
 import * as THREE from 'three';
@@ -35,6 +36,22 @@ const RECOIL_PATTERN = [
 const SPRAY_RESET = 0.3; // seconds without firing before the pattern resets
 const CONVERGE_DIST = 18; // gun barrel toes in to meet the aim ray at this range
 
+// Movement — a Quake/Source friction + acceleration model. Friction gives a
+// quick sliding stop; pressing the opposite key (counter-strafe) reverses the
+// acceleration and stops you almost instantly, which is what enables accurate
+// shots. A low air-accel cap lets you air-strafe without flying.
+const MOVE_SPEED = 5.4; // run speed
+const WALK_SPEED = 2.9; // slow walk (hold the walk key)
+const CROUCH_SPEED = 2.5;
+const GROUND_ACCEL = 11;
+const AIR_ACCEL = 12;
+const AIR_SPEED_CAP = 1.1; // accel cap while airborne — enables air-strafing
+const FRICTION = 7;
+const STOP_SPEED = 1.6; // friction floor — keeps low speeds decelerating firmly
+const JUMP_SPEED = 6.0;
+const GRAVITY = -19;
+const MAX_SPEED = 11; // safety clamp on air-strafe speed gain
+
 /** Nudge a unit direction to a random point inside a cone of `halfAngle`. */
 function applySpread(dir, halfAngle) {
   if (halfAngle <= 1e-5) return dir;
@@ -59,7 +76,7 @@ export class Player {
 
     this.binds = {
       forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
-      jump: 'Space', sprint: 'ShiftLeft', crouch: 'KeyC',
+      jump: 'Space', walk: 'ShiftLeft', crouch: 'KeyC',
     };
     this.feet = new THREE.Vector3(0, 0, 0);
     this.vel = new THREE.Vector3(); // horizontal velocity
@@ -74,15 +91,6 @@ export class Player {
     this.spread = 0; // accumulated spray bloom
     this._recoilIndex = 0; // current position in the spray pattern
     this._timeSinceShot = 999; // gates the spray-pattern reset
-
-    this.walkSpeed = 4.8;
-    this.sprintSpeed = 7.6;
-    this.crouchSpeed = 2.6;
-    this.accel = 22;
-    this.decel = 18;
-    this.airAccel = 6;
-    this.jumpSpeed = 6.2;
-    this.gravity = -19;
 
     this._shootTimer = 0;
     this._raycaster = new THREE.Raycaster();
@@ -139,7 +147,7 @@ export class Player {
 
   /** Current spread cone half-angle (radians): movement + air + spray bloom. */
   _inaccuracy() {
-    const moveFrac = Math.min(this.vel.length() / this.walkSpeed, 1.5);
+    const moveFrac = Math.min(this.vel.length() / MOVE_SPEED, 1.5);
     let a = BASE_SPREAD + moveFrac * MOVE_SPREAD + this.spread;
     if (!this.onGround) a += AIR_SPREAD;
     return a;
@@ -208,31 +216,45 @@ export class Player {
     const ix = (keys.has(b.right) ? 1 : 0) - (keys.has(b.left) ? 1 : 0);
     const iz = (keys.has(b.back) ? 1 : 0) - (keys.has(b.forward) ? 1 : 0);
 
-    const dir = new THREE.Vector3();
-    dir.addScaledVector(right, ix);
-    dir.addScaledVector(forward, -iz);
-    const moving = dir.lengthSq() > 0;
-    if (moving) dir.normalize();
+    const wishDir = new THREE.Vector3();
+    wishDir.addScaledVector(right, ix);
+    wishDir.addScaledVector(forward, -iz);
+    const hasInput = wishDir.lengthSq() > 0;
+    if (hasInput) wishDir.normalize();
 
     const crouching = keys.has(b.crouch);
-    const sprinting = keys.has(b.sprint) && !crouching && iz < 0;
-    const maxSpeed = !moving
-      ? 0
-      : crouching
-        ? this.crouchSpeed
-        : sprinting
-          ? this.sprintSpeed
-          : this.walkSpeed;
+    const wishSpeed = crouching ? CROUCH_SPEED : keys.has(b.walk) ? WALK_SPEED : MOVE_SPEED;
 
-    const target = dir.multiplyScalar(maxSpeed);
-    const speedingUp = target.lengthSq() > this.vel.lengthSq();
-    const rate = this.onGround ? (speedingUp ? this.accel : this.decel) : this.airAccel;
-    this.vel.lerp(target, 1 - Math.exp(-rate * dt));
-    if (maxSpeed > 0 && this.vel.lengthSq() > maxSpeed * maxSpeed) this.vel.setLength(maxSpeed);
+    if (this.onGround) {
+      this._applyFriction(dt);
+      if (hasInput) this._accelerate(wishDir, wishSpeed, GROUND_ACCEL, dt);
+    } else if (hasInput) {
+      // air: the low accel cap is what makes air-strafing work
+      this._accelerate(wishDir, Math.min(wishSpeed, AIR_SPEED_CAP), AIR_ACCEL, dt);
+    }
+    if (this.vel.lengthSq() > MAX_SPEED * MAX_SPEED) this.vel.setLength(MAX_SPEED);
 
     // crouch height eases in/out
     const targetHeight = crouching ? CROUCH_HEIGHT : STAND_HEIGHT;
     this.height += (targetHeight - this.height) * (1 - Math.exp(-12 * dt));
+  }
+
+  /** Quake-style ground friction — a quick, slightly-sliding stop. */
+  _applyFriction(dt) {
+    const speed = this.vel.length();
+    if (speed < 0.05) {
+      this.vel.set(0, 0, 0);
+      return;
+    }
+    const drop = Math.max(speed, STOP_SPEED) * FRICTION * dt;
+    this.vel.multiplyScalar(Math.max(0, speed - drop) / speed);
+  }
+
+  /** Quake-style acceleration — adds speed toward wishDir, capped at wishSpeed. */
+  _accelerate(wishDir, wishSpeed, accel, dt) {
+    const addSpeed = wishSpeed - this.vel.dot(wishDir);
+    if (addSpeed <= 0) return;
+    this.vel.addScaledVector(wishDir, Math.min(accel * wishSpeed * dt, addSpeed));
   }
 
   _resolveHorizontal() {
@@ -277,9 +299,9 @@ export class Player {
 
     this._stepMovement(dt, keys);
 
-    this.velY += this.gravity * dt;
+    this.velY += GRAVITY * dt;
     if (keys.has(this.binds.jump) && this.onGround) {
-      this.velY = this.jumpSpeed;
+      this.velY = JUMP_SPEED;
       this.onGround = false;
     }
 
@@ -303,7 +325,7 @@ export class Player {
 
     // viewmodel bob while walking
     const speed = this.vel.length();
-    const bob = Math.sin(performance.now() * 0.012) * Math.min(speed / this.walkSpeed, 1) * 0.012;
+    const bob = Math.sin(performance.now() * 0.012) * Math.min(speed / MOVE_SPEED, 1) * 0.012;
     this.gun.position.x = this._gunRest.x;
     this.gun.position.y += bob;
 

@@ -20,7 +20,7 @@ const DEFAULT_BINDS = {
   left: 'KeyA',
   right: 'KeyD',
   jump: 'Space',
-  sprint: 'ShiftLeft',
+  walk: 'ShiftLeft',
   crouch: 'KeyC',
 };
 
@@ -39,7 +39,7 @@ const ACTIONS = [
   ['left', 'Strafe left'],
   ['right', 'Strafe right'],
   ['jump', 'Jump'],
-  ['sprint', 'Sprint'],
+  ['walk', 'Walk (slow)'],
   ['crouch', 'Crouch'],
 ];
 

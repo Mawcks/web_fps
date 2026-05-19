@@ -769,7 +769,7 @@ function refreshHud() {
       ? `EDIT · ${cells} cells carved · ${editor.tool} tool`
       : 'EDIT · drag on the map to carve your first room';
   } else {
-    ui.hud.textContent = 'PLAY · WASD move · Shift sprint · C crouch · Space jump · P to edit';
+    ui.hud.textContent = 'PLAY · WASD move · Shift walk · C crouch · Space jump · click shoot · P to edit';
   }
 }
 
