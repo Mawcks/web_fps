@@ -3,10 +3,15 @@
 - [x] Carve rooms out of a solid world
 - [x] Wall collision
 - [x] Save/load maps (browser storage + JSON export/import)
-- [x] Shooting + targets + score
-- [x] Configurable sensitivity and keybinds
+- [x] Hitscan shooting with movement spread and a recoil spray pattern
+- [x] Configurable sensitivity, keybinds, and crosshair
 - [x] Multiplayer co-op carving (rooms, tile budgets, presence)
-- [ ] Enemies / AI
+- [x] Server-authoritative PvP combat with lag compensation
+- [x] CS-style movement (Quake friction/accel, counter-strafe, air-strafe)
+- [x] 1v1 match system (one-life rounds, farthest spawns, side swap, scoring)
+- [x] Synthesized sound effects
+- [ ] Spectator view while waiting out a round
+- [ ] More weapons / a buy phase
+- [ ] Enemies / AI for solo play
 - [ ] Multiple floors / stairs
 - [ ] Textured surfaces and lighting variety
-- [ ] See other players' shots / simple PvP

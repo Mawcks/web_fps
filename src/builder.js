@@ -1,10 +1,9 @@
 /**
  * Turns a Grid into Three.js geometry.
  *
- *  - buildPlayWorld:  the explorable 3D dungeon (floor, ceiling, walls) plus
+ *  - buildPlayWorld:  the explorable 3D arena (floor, ceiling, walls) plus
  *                     AABB colliders for the player.
  *  - buildEditView:   a flat top-down schematic — solid rock vs carved rooms.
- *  - makeTarget:      a shootable target for play mode.
  */
 
 import * as THREE from 'three';

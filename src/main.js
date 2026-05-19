@@ -1,9 +1,10 @@
 /**
- * Web FPS — carve rooms out of solid rock from a top-down view, then drop into
- * first person to explore and shoot.
+ * Web FPS — carve an arena out of solid rock from a top-down view, then drop
+ * into first person to fight 1v1 rounds in it.
  *
  * main.js wires the pieces together: the carve Grid, the top-down Editor, the
- * FPS Player, mesh building, mode switching, targets, and save/load.
+ * FPS Player, mesh building, mode switching, audio, the multiplayer match
+ * flow, and save/load.
  */
 
 import * as THREE from 'three';
