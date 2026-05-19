@@ -2,9 +2,12 @@
  * Client networking for multiplayer.
  *
  * Thin wrapper over a WebSocket to the room server. The server is authoritative
- * for the shared carve grid: the client sends carve/undo intents and applies
- * whatever state the server broadcasts back.
+ * for the shared carve grid and combat. It also tracks a server-clock estimate
+ * so remote players can be rendered at a fixed delay behind real time and shots
+ * can tell the server exactly which past instant to validate against.
  */
+
+const INTERP_DELAY = 70; // ms — remote players are rendered this far behind server time
 
 export class Net {
   constructor() {
@@ -12,12 +15,30 @@ export class Net {
     this.selfId = null;
     this.room = null;
     this.tileBudget = 0;
+    this._clockOffset = null; // serverTime - performance.now(), estimated from snapshots
     this._handlers = {};
   }
 
   /** True once joined to a room with an open connection. */
   get inRoom() {
     return !!this.ws && this.ws.readyState === WebSocket.OPEN && !!this.room;
+  }
+
+  /** Estimated current server clock, and the past instant remote players render at. */
+  get serverNow() {
+    return performance.now() + (this._clockOffset || 0);
+  }
+  get renderTime() {
+    return this.serverNow - INTERP_DELAY;
+  }
+
+  /** Sync the server-clock estimate from an incoming snapshot's timestamp. */
+  _noteServerTime(st) {
+    if (!Number.isFinite(st)) return;
+    const sample = st - performance.now();
+    if (this._clockOffset === null) this._clockOffset = sample;
+    else if (sample > this._clockOffset) this._clockOffset = sample; // trust the fastest packet
+    else this._clockOffset += (sample - this._clockOffset) * 0.02; // drift gently otherwise
   }
 
   /** Register a handler for a server message type (or 'closed' / 'neterror'). */
@@ -65,6 +86,7 @@ export class Net {
         this.room = msg.room;
         this.tileBudget = msg.tileBudget;
       }
+      if (Number.isFinite(msg.st)) this._noteServerTime(msg.st);
       this._emit(msg.t, msg);
     };
 
@@ -120,6 +142,7 @@ export class Net {
       t: 'shoot',
       ox: from.x, oy: from.y, oz: from.z,
       dx: dir.x, dy: dir.y, dz: dir.z,
+      rt: this.renderTime, // the instant we were rendering — server rewinds to here
     });
   }
 }

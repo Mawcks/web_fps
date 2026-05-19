@@ -30,8 +30,8 @@ const PLAYER_RADIUS = 0.42; // hitbox half-width
 const HEAD_FRAC = 0.82; // hits above height*HEAD_FRAC count as headshots
 const RESPAWN_MS = 2500;
 const SHOOT_RANGE = 100;
-const LAG_COMP_MS = 100; // rewind targets by this much for hit checks
-const HISTORY_MS = 700; // position history kept per player
+const LAG_COMP_MS = 100; // fallback rewind when a shot carries no render time
+const HISTORY_MS = 1000; // position history kept per player
 const SHOT_MIN_INTERVAL = 85; // server-side fire-rate guard (ms)
 
 /** ====== Carve model (open-cell replay, ownership, connectivity) ====== */
@@ -395,6 +395,7 @@ wss.on('connection', (ws) => {
         {
           t: 'moved',
           id: player.id,
+          st: now, // server timestamp — drives client interpolation + lag comp
           name: player.name,
           color: player.color,
           x: player.x,
@@ -420,7 +421,10 @@ wss.on('connection', (ws) => {
       d.x /= dl;
       d.y /= dl;
       d.z /= dl;
-      const rewindT = now - LAG_COMP_MS;
+      // rewind targets to the exact moment the shooter was rendering — the
+      // client sends its render time, clamped to the kept history window
+      const rt = Number.isFinite(msg.rt) ? msg.rt : now - LAG_COMP_MS;
+      const rewindT = Math.max(now - HISTORY_MS, Math.min(now, rt));
       let best = null;
       for (const b of room.players.values()) {
         if (b.id === player.id || !b.alive || !b.playing) continue;

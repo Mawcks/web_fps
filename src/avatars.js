@@ -1,9 +1,11 @@
 /**
  * Remote-player avatars for multiplayer play mode.
  *
- * Each other player who is currently in play mode is drawn as a simple colored
- * figure with a floating name tag. Network position updates are low-frequency,
- * so positions are eased toward their targets every frame.
+ * Each other player in play mode is drawn as a colored figure with a name tag.
+ * Position snapshots are buffered and rendered at a fixed delay behind server
+ * time, interpolating between the two snapshots that straddle the render time.
+ * That fixed, reconstructable delay is what lets the server reproduce exactly
+ * what the shooter saw.
  */
 
 import * as THREE from 'three';
@@ -60,19 +62,20 @@ export class Avatars {
     return sprite;
   }
 
-  /** Create or update an avatar from a network update. */
+  /** Buffer a position snapshot for an avatar (creating it on first sight). */
   set(id, data) {
     let a = this.map.get(id);
     if (!a) {
       const figure = this._buildFigure(data.color || '#cccccc');
       figure.add(this._buildNameTag(data.name || 'Player', data.color || '#cccccc'));
       this.group.add(figure);
-      a = { figure, x: data.x || 0, z: data.z || 0, yaw: data.yaw || 0, alive: true };
+      a = { figure, snaps: [], x: 0, z: 0, alive: true, playing: false };
       this.map.set(id, a);
     }
-    a.tx = data.x;
-    a.tz = data.z;
-    a.tyaw = data.yaw;
+    if (Number.isFinite(data.st)) {
+      a.snaps.push({ st: data.st, x: data.x || 0, z: data.z || 0, yaw: data.yaw || 0 });
+      if (a.snaps.length > 40) a.snaps.shift();
+    }
     a.playing = !!data.playing;
     a.figure.visible = a.playing && a.alive;
   }
@@ -104,19 +107,33 @@ export class Avatars {
     this.group.visible = visible;
   }
 
-  /** Ease every avatar toward its latest network position. */
-  update(dt) {
-    const k = 1 - Math.exp(-13 * dt);
+  /** Render every avatar at `renderSt` (server time) by interpolating snapshots. */
+  update(renderSt) {
     for (const a of this.map.values()) {
-      if (a.tx === undefined) continue;
-      a.x += (a.tx - a.x) * k;
-      a.z += (a.tz - a.z) * k;
-      let dyaw = a.tyaw - a.yaw;
-      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
-      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
-      a.yaw += dyaw * k;
-      a.figure.position.set(a.x, 0, a.z);
-      a.figure.rotation.y = a.yaw;
+      const s = a.snaps;
+      if (s.length === 0) continue;
+      let x, z, yaw;
+      if (renderSt <= s[0].st) {
+        ({ x, z, yaw } = s[0]);
+      } else if (renderSt >= s[s.length - 1].st) {
+        ({ x, z, yaw } = s[s.length - 1]);
+      } else {
+        let i = s.length - 1;
+        while (i > 0 && s[i - 1].st > renderSt) i--;
+        const b = s[i - 1];
+        const c = s[i];
+        const f = (renderSt - b.st) / ((c.st - b.st) || 1);
+        let dyaw = c.yaw - b.yaw;
+        while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+        while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+        x = b.x + (c.x - b.x) * f;
+        z = b.z + (c.z - b.z) * f;
+        yaw = b.yaw + dyaw * f;
+      }
+      a.x = x;
+      a.z = z;
+      a.figure.position.set(x, 0, z);
+      a.figure.rotation.y = yaw;
     }
   }
 }

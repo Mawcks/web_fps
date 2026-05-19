@@ -38,7 +38,6 @@ let hitmarkerTimer = null;
 const keys = new Set();
 const editView = { cx: 0, cz: 0, halfW: 24, halfD: 24, zoom: 1 };
 let lastTime = performance.now();
-let lastMoveSent = 0;
 let mpFirstState = false;
 
 const ui = {};
@@ -106,6 +105,7 @@ function init() {
   bindInput();
   setupNet();
   window.addEventListener('resize', onResize);
+  setInterval(sendMove, 15); // ~66 Hz position updates, steady regardless of frame rate
 
   player.controls.addEventListener('unlock', onPointerUnlock);
 
@@ -517,6 +517,15 @@ function defaultServerUrl() {
   return `${proto}//${location.host}`;
 }
 
+/** Send the local player's position to the server (~66 Hz, via setInterval). */
+function sendMove() {
+  if (!net.inRoom) return;
+  net.move(
+    player.feet.x, player.feet.z, player.camera.rotation.y,
+    player.height, mode === 'play' && !transition,
+  );
+}
+
 function handleCarveIntent(type, x, z, w, d) {
   if (net.inRoom) {
     net.carve(type, x, z, w, d);
@@ -803,16 +812,7 @@ function animate() {
     player.update(dt, keys); // keeps the gun viewmodel settled
   }
 
-  if (net.inRoom) {
-    avatars.update(dt);
-    if (now - lastMoveSent > 60) {
-      lastMoveSent = now;
-      net.move(
-        player.feet.x, player.feet.z, player.camera.rotation.y,
-        player.height, mode === 'play' && !transition,
-      );
-    }
-  }
+  if (net.inRoom) avatars.update(net.renderTime);
 
   muzzleFlash = Math.max(0, muzzleFlash - dt * 9);
   player.torch.intensity = 1.0 + muzzleFlash * 2.4;
