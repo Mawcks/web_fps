@@ -21,3 +21,8 @@
   spawns at the arena's farthest points, a side swap at half, a round/score HUD
   and banners. Synthesized Web Audio sound effects for combat and match events,
   with positional remote gunshots and a volume control.
+- v0.7.1: Made it deployable behind a domain. The server now also reads the
+  Wings-injected `SERVER_PORT`, and the repo ships a `Dockerfile`, a Pterodactyl
+  egg (`egg-web-fps.json`), and `DEPLOY.md`. One process still serves the client
+  and the rooms on a single port — put a `wss://` reverse proxy in front and
+  friends can join over the internet.

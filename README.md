@@ -67,7 +67,8 @@ npm run server      # WebSocket + static host on :8787
   The client connects to `ws://localhost:8787`.
 - **Deploy:** `npm run build`, then `npm run server` — the server also serves
   the built client from `dist/`, so one process on one port is the whole game.
-  Share `http://<host>:8787/?room=CODE`.
+  Share `http://<host>:8787/?room=CODE`. For containerized / Pterodactyl hosting
+  behind a domain (with `wss://`), see [DEPLOY.md](DEPLOY.md).
 
 Server tuning is via environment variables: `PORT`, `TILE_BUDGET`, `ROUND_WINS`,
 `ROUNDS_TO_SWAP`, `FREEZE_MS`, `ROUND_END_MS`, `MATCH_END_MS`.

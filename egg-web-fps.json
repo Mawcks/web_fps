@@ -1,0 +1,107 @@
+{
+    "_comment": "Pterodactyl egg for web-fps — a single Node process that serves the built client and the WebSocket game server on one port. Import via Admin > Nests > Import Egg. The installer clones the repo, builds the client, and prunes to runtime deps. The server reads SERVER_PORT (injected by Wings).",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-05-30T00:00:00+00:00",
+    "name": "Web FPS (1v1 Arena)",
+    "author": "admin@mawcks.net",
+    "description": "Browser 1v1 PvP arena shooter — carve a map from a top-down editor, then fight Counter-Strike-style one-life rounds in it. One process serves the built client and the WebSocket room server on a single port; put a TLS reverse proxy in front (forwarding WebSocket upgrades) for wss://.",
+    "features": null,
+    "docker_images": {
+        "Node 22": "ghcr.io/pterodactyl/yolks:nodejs_22",
+        "Node 24": "ghcr.io/pterodactyl/yolks:nodejs_24",
+        "Node 21": "ghcr.io/pterodactyl/yolks:nodejs_21",
+        "Node 20": "ghcr.io/pterodactyl/yolks:nodejs_20"
+    },
+    "file_denylist": [],
+    "startup": "node server/index.js",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"server listening on\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\nset -e\napt-get update\napt-get install -y --no-install-recommends git ca-certificates\nGIT_REPO=\"${GIT_REPO:-https://github.com/Mawcks/web_fps.git}\"\nGIT_BRANCH=\"${GIT_BRANCH:-main}\"\nmkdir -p /mnt/server\ncd /mnt/server\nif [ -d .git ]; then\n  echo \"Updating existing checkout (${GIT_BRANCH})...\"\n  git remote set-url origin \"${GIT_REPO}\"\n  git fetch --depth 1 origin \"${GIT_BRANCH}\"\n  git reset --hard \"origin/${GIT_BRANCH}\"\nelse\n  echo \"Cloning ${GIT_REPO} (${GIT_BRANCH})...\"\n  rm -rf /tmp/wf\n  git clone --depth 1 --branch \"${GIT_BRANCH}\" \"${GIT_REPO}\" /tmp/wf\n  cp -a /tmp/wf/. /mnt/server/\n  rm -rf /tmp/wf\nfi\necho \"Installing dependencies...\"\nnpm install --no-audit --no-fund\necho \"Building client...\"\nnpm run build\necho \"Pruning to runtime dependencies...\"\nnpm prune --omit=dev\necho \"web-fps install complete\"",
+            "container": "node:22-bookworm-slim",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Git repository",
+            "description": "Source repository the installer clones. Defaults to the public web_fps repo; point it at a fork to deploy your own.",
+            "env_variable": "GIT_REPO",
+            "default_value": "https://github.com/Mawcks/web_fps.git",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string"
+        },
+        {
+            "name": "Git branch",
+            "description": "Branch (or tag) to deploy. Reinstall the server to pull the latest of this branch.",
+            "env_variable": "GIT_BRANCH",
+            "default_value": "main",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string"
+        },
+        {
+            "name": "Tile budget",
+            "description": "Carve tiles each player may open in the shared editor.",
+            "env_variable": "TILE_BUDGET",
+            "default_value": "800",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:50,5000"
+        },
+        {
+            "name": "Round wins to take the match",
+            "description": "Round wins needed to win the 1v1 match (default 5).",
+            "env_variable": "ROUND_WINS",
+            "default_value": "5",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,30"
+        },
+        {
+            "name": "Rounds before side swap",
+            "description": "Total rounds played before the two players swap spawn sides (default 4).",
+            "env_variable": "ROUNDS_TO_SWAP",
+            "default_value": "4",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,60"
+        },
+        {
+            "name": "Freeze time (ms)",
+            "description": "Frozen buy/look-around time at the start of each round, in milliseconds.",
+            "env_variable": "FREEZE_MS",
+            "default_value": "2500",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,15000"
+        },
+        {
+            "name": "Round-end gap (ms)",
+            "description": "Pause between the end of a round and the start of the next, in milliseconds.",
+            "env_variable": "ROUND_END_MS",
+            "default_value": "3500",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,30000"
+        },
+        {
+            "name": "Match-end gap (ms)",
+            "description": "Pause after a match ends before the room returns to the lobby, in milliseconds.",
+            "env_variable": "MATCH_END_MS",
+            "default_value": "6500",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,60000"
+        }
+    ]
+}

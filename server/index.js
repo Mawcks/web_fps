@@ -17,7 +17,9 @@ import { WebSocketServer } from 'ws';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(DIR, '..', 'dist');
-const PORT = Number(process.env.PORT) || 8787;
+// SERVER_PORT is what Pterodactyl/Wings injects for the primary allocation;
+// PORT is the plain override for local/docker-compose use.
+const PORT = Number(process.env.SERVER_PORT) || Number(process.env.PORT) || 8787;
 const TILE_BUDGET = Number(process.env.TILE_BUDGET) || 800;
 const MAX_PLAYERS = 6;
 const PLAYER_COLORS = ['#ff5a36', '#4ea1d3', '#7bd36a', '#e8c14e', '#b06ce8', '#e86ca8'];
