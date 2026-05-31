@@ -10,10 +10,8 @@
     "description": "Browser 1v1 PvP arena shooter — carve a map from a top-down editor, then fight Counter-Strike-style one-life rounds in it. One process serves the built client and the WebSocket room server on a single port; put a TLS reverse proxy in front (forwarding WebSocket upgrades) for wss://.",
     "features": null,
     "docker_images": {
-        "Node 22": "ghcr.io/pterodactyl/yolks:nodejs_22",
-        "Node 24": "ghcr.io/pterodactyl/yolks:nodejs_24",
-        "Node 21": "ghcr.io/pterodactyl/yolks:nodejs_21",
-        "Node 20": "ghcr.io/pterodactyl/yolks:nodejs_20"
+        "Node 20": "ghcr.io/pterodactyl/yolks:nodejs_20",
+        "Node 18": "ghcr.io/pterodactyl/yolks:nodejs_18"
     },
     "file_denylist": [],
     "startup": "node server/index.js",
@@ -26,7 +24,7 @@
     "scripts": {
         "installation": {
             "script": "#!/bin/bash\nset -e\napt-get update\napt-get install -y --no-install-recommends git ca-certificates\nGIT_REPO=\"${GIT_REPO:-https://github.com/Mawcks/web_fps.git}\"\nGIT_BRANCH=\"${GIT_BRANCH:-main}\"\nmkdir -p /mnt/server\ncd /mnt/server\nif [ -d .git ]; then\n  echo \"Updating existing checkout (${GIT_BRANCH})...\"\n  git remote set-url origin \"${GIT_REPO}\"\n  git fetch --depth 1 origin \"${GIT_BRANCH}\"\n  git reset --hard \"origin/${GIT_BRANCH}\"\nelse\n  echo \"Cloning ${GIT_REPO} (${GIT_BRANCH})...\"\n  rm -rf /tmp/wf\n  git clone --depth 1 --branch \"${GIT_BRANCH}\" \"${GIT_REPO}\" /tmp/wf\n  cp -a /tmp/wf/. /mnt/server/\n  rm -rf /tmp/wf\nfi\necho \"Installing dependencies...\"\nnpm install --no-audit --no-fund\necho \"Building client...\"\nnpm run build\necho \"Pruning to runtime dependencies...\"\nnpm prune --omit=dev\necho \"web-fps install complete\"",
-            "container": "node:22-bookworm-slim",
+            "container": "node:20-bookworm-slim",
             "entrypoint": "bash"
         }
     },
